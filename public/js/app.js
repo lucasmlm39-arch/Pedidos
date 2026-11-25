@@ -30,7 +30,7 @@ const NOME_PAPEL = { vendedor: 'Vendedor', expedicao: 'Expedição', faturamento
 
 
 function irPara(chave) {
-  history.replaceState(null, '', `#${chave}`);
+  try { history.replaceState(null, '', `#${chave}`); } catch { /* ambiente restrito */ }
   document.querySelectorAll('[data-tela]').forEach((b) => b.classList.toggle('ativo', b.dataset.tela === chave));
   // Troca o contêiner para descartar listeners da tela anterior.
   const novo = document.createElement('main');

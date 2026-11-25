@@ -1,0 +1,62 @@
+<title>Pedidos do Vendedor</title>
+<meta name="theme-color" content="#1f4e3d">
+<link rel="stylesheet" href="css/app.css">
+<style>
+  /* Prévia: faixa de aviso + controle para simular falta de internet. Usa os tokens do app. */
+  :root { color-scheme: light; }
+  body { background: var(--fundo); color: var(--texto); }
+  body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-area-inset-top, 0px); z-index: 20; background: var(--primaria); }
+  .previa {
+    display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px;
+    padding-block: 8px;
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+    background: var(--alerta-fundo); color: var(--alerta); font-size: .85rem; border-bottom: 1px solid var(--borda);
+  }
+  .previa strong { color: var(--texto); }
+  .previa .btn { font-size: .82rem; padding: 6px 12px; }
+  .previa .btn[aria-pressed="true"] { background: var(--perigo); border-color: var(--perigo); color: #fff; }
+</style>
+
+<div class="previa" role="note">
+  <span><strong>Prévia do app do vendedor.</strong> Dados fictícios; nada é enviado de verdade. Pedidos com preço abaixo da tabela são "aprovados pelo gestor" em 8 segundos.</span>
+  <button id="simular-offline" class="btn" type="button" aria-pressed="false">Simular sem internet</button>
+</div>
+
+<div id="tela-login" class="tela-login" hidden>
+  <form id="form-login" class="cartao cartao-login">
+    <h1>Pedidos</h1>
+    <p class="dica">Na prévia: usuário <strong>carlos</strong>, senha <strong>123456</strong></p>
+    <label class="rotulo">Usuário<input id="login" class="input" name="login" value="carlos" autocomplete="username" autocapitalize="none" required></label>
+    <label class="rotulo">Senha<input id="senha" class="input" name="senha" type="password" value="123456" autocomplete="current-password" required></label>
+    <button class="btn btn-primario btn-grande" type="submit">Entrar</button>
+  </form>
+</div>
+
+<div id="app" hidden>
+  <header class="topo">
+    <div class="marca">Pedidos</div>
+    <nav id="menu" class="menu" aria-label="Menu"></nav>
+    <div class="topo-dir">
+      <button id="conexao" class="conexao" hidden></button>
+      <button id="ativar-notificacoes" class="btn btn-peq" hidden>Ativar notificações</button>
+      <span id="usuario" class="usuario"></span>
+      <button id="sair" class="btn btn-peq">Sair</button>
+    </div>
+  </header>
+  <main id="conteudo"></main>
+</div>
+
+<div id="toasts" class="toasts" aria-live="polite"></div>
+
+<script type="module" src="js/demo-api.js"></script>
+<script type="module" src="js/app.js"></script>
+<script type="module">
+  import { alternarInternet } from './js/demo-api.js';
+  const b = document.getElementById('simular-offline');
+  b.addEventListener('click', () => {
+    const off = alternarInternet();
+    b.setAttribute('aria-pressed', String(off));
+    b.textContent = off ? 'Voltar a internet' : 'Simular sem internet';
+  });
+</script>

@@ -22,8 +22,27 @@ function abrir() {
   return conexaoDb;
 }
 
+// Se o navegador bloquear o IndexedDB (janela anônima, prévia), guarda só na memória desta aba.
+const memoria = { kv: new Map(), fila: new Map() };
+function lojaMemoria(nome) {
+  const m = memoria[nome];
+  return {
+    get: (k) => ({ result: m.get(k) }),
+    getAll: () => ({ result: [...m.values()] }),
+    put: (v, k) => { m.set(nome === 'fila' ? v.uuid : k, structuredClone(v)); return { result: undefined }; },
+    delete: (k) => { m.delete(k); return { result: undefined }; },
+  };
+}
+
 async function operar(loja, modo, fn) {
-  const db = await abrir();
+  let db;
+  try {
+    db = await abrir();
+  } catch {
+    conexaoDb = Promise.reject(new Error('IndexedDB indisponível'));
+    conexaoDb.catch(() => {});
+    return fn(lojaMemoria(loja))?.result;
+  }
   return new Promise((ok, falha) => {
     const tx = db.transaction(loja, modo);
     const r = fn(tx.objectStore(loja));
