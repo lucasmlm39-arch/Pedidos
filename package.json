@@ -1,0 +1,20 @@
+{
+  "name": "pedidos",
+  "version": "0.1.0",
+  "description": "Sistema de pedidos para atacado: vendedores, aprovação de preço pelo gestor, expedição/pesagem, impressão e faturamento.",
+  "main": "src/server.js",
+  "private": true,
+  "scripts": {
+    "start": "node --no-warnings src/server.js",
+    "dev": "node --no-warnings --watch src/server.js",
+    "seed": "node --no-warnings src/seed.js",
+    "test": "node --no-warnings --test test/*.test.js"
+  },
+  "engines": {
+    "node": ">=22.13"
+  },
+  "license": "UNLICENSED",
+  "dependencies": {
+    "express": "^5.1.0"
+  }
+}

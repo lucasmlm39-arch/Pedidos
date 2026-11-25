@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Impressão do pedido</title>
+  <style>
+    /* Layout para impressora térmica de 80 mm (funciona também em A4). */
+    @page { size: 80mm auto; margin: 3mm; }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #eee; font: 12px/1.35 "Courier New", ui-monospace, monospace; color: #000; }
+    .cupom { width: 74mm; margin: 12px auto; background: #fff; padding: 3mm; }
+    h1 { font-size: 16px; text-align: center; margin: 0 0 2px; }
+    .centro { text-align: center; }
+    hr { border: 0; border-top: 1px dashed #000; margin: 6px 0; }
+    table { width: 100%; border-collapse: collapse; }
+    td { vertical-align: top; padding: 1px 0; }
+    .num { text-align: right; white-space: nowrap; }
+    .desc { font-weight: bold; }
+    .total { font-size: 15px; font-weight: bold; }
+    .aviso { padding: 8px; font-family: system-ui, sans-serif; text-align: center; }
+    .acoes { text-align: center; margin: 12px; font-family: system-ui, sans-serif; }
+    .acoes button { font-size: 15px; padding: 8px 16px; }
+    @media print { body { background: #fff; } .cupom { margin: 0; width: auto; } .acoes { display: none; } }
+  </style>
+</head>
+<body>
+  <div class="acoes"><button id="imprimir">Imprimir</button> <button onclick="window.close()">Fechar</button></div>
+  <div id="cupom" class="cupom"><div class="aviso">Carregando…</div></div>
+  <script type="module" src="/js/impressao.js"></script>
+</body>
+</html>

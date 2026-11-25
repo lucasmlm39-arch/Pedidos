@@ -1,0 +1,341 @@
+// Regras de negócio do pedido e seu fluxo de status.
+const { transacao } = require('./db');
+const { precosDoCliente } = require('./precos');
+
+const STATUS = {
+  AGUARDANDO_APROVACAO: 'AGUARDANDO_APROVACAO',     // tem item abaixo da tabela: gestor precisa aprovar
+  REVISAO: 'REVISAO',                               // preço reprovado ou recusado pela expedição: vendedor ajusta
+  AGUARDANDO_EXPEDICAO: 'AGUARDANDO_EXPEDICAO',     // liberado, esperando a expedição aceitar
+  EM_SEPARACAO: 'EM_SEPARACAO',                     // expedição aceitou, separando e pesando
+  AGUARDANDO_FATURAMENTO: 'AGUARDANDO_FATURAMENTO', // pesado/separado, impresso e enviado ao faturamento
+  FATURADO: 'FATURADO',
+  CANCELADO: 'CANCELADO',
+};
+
+const ROTULOS = {
+  AGUARDANDO_APROVACAO: 'Aguardando aprovação de preço',
+  REVISAO: 'Em revisão (vendedor)',
+  AGUARDANDO_EXPEDICAO: 'Aguardando expedição',
+  EM_SEPARACAO: 'Em separação / pesagem',
+  AGUARDANDO_FATURAMENTO: 'Aguardando faturamento',
+  FATURADO: 'Faturado',
+  CANCELADO: 'Cancelado',
+};
+
+class ErroNegocio extends Error {
+  constructor(mensagem, status = 400) {
+    super(mensagem);
+    this.status = status;
+  }
+}
+
+const agora = () => new Date().toISOString().replace('T', ' ').slice(0, 19);
+
+function quantidadeFinal(item) {
+  return item.peso_real ?? item.quantidade;
+}
+
+function calcularTotal(itens) {
+  return itens.reduce((s, i) => s + Math.round(quantidadeFinal(i) * i.preco_centavos), 0);
+}
+
+function registrarHistorico(db, pedidoId, usuarioId, anterior, novo, descricao) {
+  db.prepare(`INSERT INTO pedido_historico (pedido_id, usuario_id, status_anterior, status_novo, descricao)
+              VALUES (?, ?, ?, ?, ?)`).run(pedidoId, usuarioId, anterior, novo, descricao || null);
+}
+
+function mudarStatus(db, pedido, usuario, novo, descricao, extras = {}) {
+  const campos = { status: novo, atualizado_em: agora(), ...extras };
+  const sets = Object.keys(campos).map((k) => `${k} = :${k}`).join(', ');
+  db.prepare(`UPDATE pedidos SET ${sets} WHERE id = :id`).run({ ...campos, id: pedido.id });
+  registrarHistorico(db, pedido.id, usuario.id, pedido.status, novo, descricao);
+}
+
+function buscarPedidoBruto(db, id) {
+  const p = db.prepare('SELECT * FROM pedidos WHERE id = ?').get(id);
+  if (!p) throw new ErroNegocio('Pedido não encontrado', 404);
+  return p;
+}
+
+function exigirStatus(pedido, ...permitidos) {
+  if (!permitidos.includes(pedido.status)) {
+    throw new ErroNegocio(`Ação não permitida: pedido está "${ROTULOS[pedido.status]}"`, 409);
+  }
+}
+
+// Valida os itens enviados pelo vendedor e compara com a tabela de preço do cliente.
+function montarItens(db, clienteId, itens) {
+  if (!Array.isArray(itens) || itens.length === 0) throw new ErroNegocio('Informe ao menos um item');
+  const precos = precosDoCliente(db, clienteId);
+  const vistos = new Set();
+  return itens.map((i, idx) => {
+    const produtoId = Number(i.produto_id);
+    const produto = precos.get(produtoId);
+    if (!produto) throw new ErroNegocio(`Item ${idx + 1}: produto inválido ou inativo`);
+    if (vistos.has(produtoId)) throw new ErroNegocio(`Produto "${produto.descricao}" repetido no pedido`);
+    vistos.add(produtoId);
+    const quantidade = Number(i.quantidade);
+    if (!(quantidade > 0)) throw new ErroNegocio(`Quantidade inválida para "${produto.descricao}"`);
+    if (!produto.pesavel && !Number.isInteger(quantidade)) {
+      throw new ErroNegocio(`"${produto.descricao}" é vendido por ${produto.unidade}: use quantidade inteira`);
+    }
+    const tabela = produto.preco_centavos ?? null;
+    const preco = i.preco_centavos == null ? tabela : Math.round(Number(i.preco_centavos));
+    if (!(preco > 0)) throw new ErroNegocio(`Informe o preço de "${produto.descricao}" (sem preço de tabela)`);
+    const precisaAprovar = tabela == null || preco < tabela;
+    return {
+      produto_id: produtoId,
+      quantidade,
+      preco_centavos: preco,
+      preco_tabela_centavos: tabela,
+      tabela_id: produto.tabela_id ?? null,
+      aprovacao: precisaAprovar ? 'pendente' : 'nao_necessaria',
+      peso_real: null,
+    };
+  });
+}
+
+function gravarItens(db, pedidoId, itens) {
+  db.prepare('DELETE FROM pedido_itens WHERE pedido_id = ?').run(pedidoId);
+  const ins = db.prepare(`INSERT INTO pedido_itens
+    (pedido_id, produto_id, quantidade, preco_centavos, preco_tabela_centavos, tabela_id, aprovacao)
+    VALUES (?, ?, ?, ?, ?, ?, ?)`);
+  for (const i of itens) {
+    ins.run(pedidoId, i.produto_id, i.quantidade, i.preco_centavos, i.preco_tabela_centavos, i.tabela_id, i.aprovacao);
+  }
+}
+
+function validarCliente(db, clienteId) {
+  const c = db.prepare('SELECT id, ativo FROM clientes WHERE id = ?').get(Number(clienteId));
+  if (!c || !c.ativo) throw new ErroNegocio('Cliente inválido ou inativo');
+  return c.id;
+}
+
+function avisarPorStatus(ev, pedido) {
+  const resumo = { id: pedido.id, status: pedido.status, rotulo: ROTULOS[pedido.status] };
+  const destinos = {
+    AGUARDANDO_APROVACAO: { papeis: ['gestor'] },
+    REVISAO: { usuarioIds: [pedido.vendedor_id] },
+    AGUARDANDO_EXPEDICAO: { papeis: ['expedicao'], usuarioIds: [pedido.vendedor_id] },
+    EM_SEPARACAO: { papeis: ['expedicao'], usuarioIds: [pedido.vendedor_id] },
+    AGUARDANDO_FATURAMENTO: { papeis: ['faturamento', 'expedicao'], usuarioIds: [pedido.vendedor_id] },
+    FATURADO: { papeis: ['faturamento'], usuarioIds: [pedido.vendedor_id] },
+    CANCELADO: { papeis: ['expedicao'], usuarioIds: [pedido.vendedor_id] },
+  };
+  ev?.emitir('pedido', resumo, destinos[pedido.status] || {});
+}
+
+// ---------- Ações ----------
+
+function criarPedido(db, ev, usuario, dados) {
+  const id = transacao(db, () => {
+    const clienteId = validarCliente(db, dados.cliente_id);
+    const itens = montarItens(db, clienteId, dados.itens);
+    const status = itens.some((i) => i.aprovacao === 'pendente')
+      ? STATUS.AGUARDANDO_APROVACAO
+      : STATUS.AGUARDANDO_EXPEDICAO;
+    const r = db.prepare(`INSERT INTO pedidos (cliente_id, vendedor_id, status, observacao, total_centavos)
+                          VALUES (?, ?, ?, ?, ?)`)
+      .run(clienteId, usuario.id, status, dados.observacao || null, calcularTotal(itens));
+    const pid = Number(r.lastInsertRowid);
+    gravarItens(db, pid, itens);
+    registrarHistorico(db, pid, usuario.id, null, status, 'Pedido lançado');
+    return pid;
+  });
+  const pedido = obterPedido(db, id);
+  avisarPorStatus(ev, pedido);
+  return pedido;
+}
+
+function revisarPedido(db, ev, usuario, id, dados) {
+  transacao(db, () => {
+    const p = buscarPedidoBruto(db, id);
+    if (usuario.papel === 'vendedor' && p.vendedor_id !== usuario.id) throw new ErroNegocio('Pedido de outro vendedor', 403);
+    exigirStatus(p, STATUS.REVISAO, STATUS.AGUARDANDO_APROVACAO, STATUS.AGUARDANDO_EXPEDICAO);
+    const clienteId = validarCliente(db, dados.cliente_id ?? p.cliente_id);
+    const itens = montarItens(db, clienteId, dados.itens);
+    const novo = itens.some((i) => i.aprovacao === 'pendente') ? STATUS.AGUARDANDO_APROVACAO : STATUS.AGUARDANDO_EXPEDICAO;
+    db.prepare('UPDATE pedidos SET cliente_id = ?, observacao = ?, total_centavos = ? WHERE id = ?')
+      .run(clienteId, dados.observacao ?? p.observacao, calcularTotal(itens), p.id);
+    gravarItens(db, p.id, itens);
+    mudarStatus(db, p, usuario, novo, 'Pedido alterado pelo vendedor', { motivo_status: null });
+  });
+  const pedido = obterPedido(db, id);
+  avisarPorStatus(ev, pedido);
+  return pedido;
+}
+
+// decisoes: [{ item_id, aprovado: boolean, motivo? }]
+function decidirPrecos(db, ev, usuario, id, decisoes) {
+  transacao(db, () => {
+    const p = buscarPedidoBruto(db, id);
+    exigirStatus(p, STATUS.AGUARDANDO_APROVACAO);
+    if (!Array.isArray(decisoes) || decisoes.length === 0) throw new ErroNegocio('Nenhuma decisão informada');
+    const upd = db.prepare(`UPDATE pedido_itens SET aprovacao = ?, aprovado_por = ?, aprovado_em = ?, motivo_reprovacao = ?
+                            WHERE id = ? AND pedido_id = ? AND aprovacao IN ('pendente','aprovado','reprovado')`);
+    for (const d of decisoes) {
+      const r = upd.run(d.aprovado ? 'aprovado' : 'reprovado', usuario.id, agora(), d.aprovado ? null : (d.motivo || null), Number(d.item_id), p.id);
+      if (r.changes === 0) throw new ErroNegocio(`Item ${d.item_id} não precisa de aprovação neste pedido`);
+    }
+    const itens = db.prepare('SELECT aprovacao, motivo_reprovacao FROM pedido_itens WHERE pedido_id = ?').all(p.id);
+    if (itens.some((i) => i.aprovacao === 'pendente')) return; // ainda faltam itens
+    const reprovados = itens.filter((i) => i.aprovacao === 'reprovado');
+    if (reprovados.length) {
+      const motivo = reprovados.map((i) => i.motivo_reprovacao).filter(Boolean).join('; ') || 'Preço reprovado pelo gestor';
+      mudarStatus(db, p, usuario, STATUS.REVISAO, `Preço reprovado: ${motivo}`, { motivo_status: motivo });
+    } else {
+      mudarStatus(db, p, usuario, STATUS.AGUARDANDO_EXPEDICAO, 'Preços aprovados pelo gestor');
+    }
+  });
+  const pedido = obterPedido(db, id);
+  avisarPorStatus(ev, pedido);
+  return pedido;
+}
+
+function aceitarExpedicao(db, ev, usuario, id) {
+  transacao(db, () => {
+    const p = buscarPedidoBruto(db, id);
+    exigirStatus(p, STATUS.AGUARDANDO_EXPEDICAO);
+    mudarStatus(db, p, usuario, STATUS.EM_SEPARACAO, 'Pedido aceito pela expedição');
+  });
+  const pedido = obterPedido(db, id);
+  avisarPorStatus(ev, pedido);
+  return pedido;
+}
+
+function recusarExpedicao(db, ev, usuario, id, motivo) {
+  if (!motivo || !String(motivo).trim()) throw new ErroNegocio('Informe o motivo da recusa');
+  transacao(db, () => {
+    const p = buscarPedidoBruto(db, id);
+    exigirStatus(p, STATUS.AGUARDANDO_EXPEDICAO, STATUS.EM_SEPARACAO);
+    db.prepare('UPDATE pedido_itens SET peso_real = NULL WHERE pedido_id = ?').run(p.id);
+    mudarStatus(db, p, usuario, STATUS.REVISAO, `Recusado pela expedição: ${motivo}`, { motivo_status: String(motivo) });
+  });
+  const pedido = obterPedido(db, id);
+  avisarPorStatus(ev, pedido);
+  return pedido;
+}
+
+function registrarPeso(db, ev, usuario, id, itemId, peso) {
+  const valor = Number(peso);
+  if (!(valor > 0)) throw new ErroNegocio('Peso inválido');
+  transacao(db, () => {
+    const p = buscarPedidoBruto(db, id);
+    exigirStatus(p, STATUS.EM_SEPARACAO);
+    const item = db.prepare(`SELECT i.id, pr.pesavel FROM pedido_itens i JOIN produtos pr ON pr.id = i.produto_id
+                             WHERE i.id = ? AND i.pedido_id = ?`).get(Number(itemId), p.id);
+    if (!item) throw new ErroNegocio('Item não encontrado', 404);
+    if (!item.pesavel) throw new ErroNegocio('Este produto não é pesável');
+    db.prepare('UPDATE pedido_itens SET peso_real = ? WHERE id = ?').run(Math.round(valor * 1000) / 1000, item.id);
+    const itens = db.prepare('SELECT quantidade, peso_real, preco_centavos FROM pedido_itens WHERE pedido_id = ?').all(p.id);
+    db.prepare('UPDATE pedidos SET total_centavos = ?, atualizado_em = ? WHERE id = ?').run(calcularTotal(itens), agora(), p.id);
+  });
+  const pedido = obterPedido(db, id);
+  ev?.emitir('pedido', { id: pedido.id, status: pedido.status, rotulo: ROTULOS[pedido.status] }, { papeis: ['expedicao'] });
+  return pedido;
+}
+
+function concluirSeparacao(db, ev, usuario, id) {
+  transacao(db, () => {
+    const p = buscarPedidoBruto(db, id);
+    exigirStatus(p, STATUS.EM_SEPARACAO);
+    const faltando = db.prepare(`SELECT pr.descricao FROM pedido_itens i JOIN produtos pr ON pr.id = i.produto_id
+                                 WHERE i.pedido_id = ? AND pr.pesavel = 1 AND i.peso_real IS NULL`).all(p.id);
+    if (faltando.length) throw new ErroNegocio(`Falta pesar: ${faltando.map((f) => f.descricao).join(', ')}`);
+    mudarStatus(db, p, usuario, STATUS.AGUARDANDO_FATURAMENTO, 'Separação/pesagem concluída. Enviado ao faturamento');
+  });
+  const pedido = obterPedido(db, id);
+  avisarPorStatus(ev, pedido);
+  ev?.emitir('impressao', { id: pedido.id }, { papeis: ['expedicao'] });
+  return pedido;
+}
+
+function marcarImpresso(db, usuario, id) {
+  const p = buscarPedidoBruto(db, id);
+  db.prepare('UPDATE pedidos SET impresso_em = ? WHERE id = ?').run(agora(), p.id);
+  registrarHistorico(db, p.id, usuario.id, p.status, p.status, 'Pedido impresso');
+  return obterPedido(db, id);
+}
+
+function faturar(db, ev, usuario, id, notaFiscal) {
+  transacao(db, () => {
+    const p = buscarPedidoBruto(db, id);
+    exigirStatus(p, STATUS.AGUARDANDO_FATURAMENTO);
+    mudarStatus(db, p, usuario, STATUS.FATURADO, notaFiscal ? `Faturado - NF ${notaFiscal}` : 'Faturado',
+      { nota_fiscal: notaFiscal || null });
+  });
+  const pedido = obterPedido(db, id);
+  avisarPorStatus(ev, pedido);
+  return pedido;
+}
+
+function cancelar(db, ev, usuario, id, motivo) {
+  transacao(db, () => {
+    const p = buscarPedidoBruto(db, id);
+    if (usuario.papel === 'vendedor') {
+      if (p.vendedor_id !== usuario.id) throw new ErroNegocio('Pedido de outro vendedor', 403);
+      exigirStatus(p, STATUS.AGUARDANDO_APROVACAO, STATUS.REVISAO, STATUS.AGUARDANDO_EXPEDICAO);
+    } else {
+      exigirStatus(p, STATUS.AGUARDANDO_APROVACAO, STATUS.REVISAO, STATUS.AGUARDANDO_EXPEDICAO,
+        STATUS.EM_SEPARACAO, STATUS.AGUARDANDO_FATURAMENTO);
+    }
+    mudarStatus(db, p, usuario, STATUS.CANCELADO, motivo ? `Cancelado: ${motivo}` : 'Cancelado',
+      { motivo_status: motivo || null });
+  });
+  const pedido = obterPedido(db, id);
+  avisarPorStatus(ev, pedido);
+  return pedido;
+}
+
+// ---------- Consultas ----------
+
+function obterPedido(db, id) {
+  const p = db.prepare(`
+    SELECT p.*, c.razao_social AS cliente_nome, c.nome_fantasia AS cliente_fantasia, c.codigo AS cliente_codigo,
+           c.documento AS cliente_documento, c.cidade AS cliente_cidade, c.uf AS cliente_uf,
+           u.nome AS vendedor_nome
+    FROM pedidos p JOIN clientes c ON c.id = p.cliente_id JOIN usuarios u ON u.id = p.vendedor_id
+    WHERE p.id = ?`).get(Number(id));
+  if (!p) throw new ErroNegocio('Pedido não encontrado', 404);
+  p.rotulo_status = ROTULOS[p.status];
+  p.itens = db.prepare(`
+    SELECT i.*, pr.codigo, pr.descricao, pr.unidade, pr.pesavel, t.nome AS tabela_nome
+    FROM pedido_itens i JOIN produtos pr ON pr.id = i.produto_id
+    LEFT JOIN tabelas_preco t ON t.id = i.tabela_id
+    WHERE i.pedido_id = ? ORDER BY i.id`).all(p.id)
+    .map((i) => ({ ...i, total_centavos: Math.round(quantidadeFinal(i) * i.preco_centavos) }));
+  p.historico = db.prepare(`
+    SELECT h.*, u.nome AS usuario_nome FROM pedido_historico h LEFT JOIN usuarios u ON u.id = h.usuario_id
+    WHERE h.pedido_id = ? ORDER BY h.id`).all(p.id);
+  return p;
+}
+
+function listarPedidos(db, usuario, filtros = {}) {
+  const cond = [];
+  const params = {};
+  if (usuario.papel === 'vendedor') {
+    cond.push('p.vendedor_id = :vendedor');
+    params.vendedor = usuario.id;
+  }
+  if (filtros.status) {
+    const lista = String(filtros.status).split(',').filter((s) => STATUS[s]);
+    if (lista.length) cond.push(`p.status IN (${lista.map((s) => `'${s}'`).join(',')})`);
+  }
+  if (filtros.nao_impressos) cond.push('p.impresso_em IS NULL');
+  const where = cond.length ? `WHERE ${cond.join(' AND ')}` : '';
+  return db.prepare(`
+    SELECT p.id, p.status, p.total_centavos, p.criado_em, p.atualizado_em, p.impresso_em, p.motivo_status,
+           c.razao_social AS cliente_nome, c.nome_fantasia AS cliente_fantasia, u.nome AS vendedor_nome,
+           (SELECT COUNT(*) FROM pedido_itens i WHERE i.pedido_id = p.id) AS qtd_itens,
+           (SELECT COUNT(*) FROM pedido_itens i WHERE i.pedido_id = p.id AND i.aprovacao = 'pendente') AS itens_pendentes
+    FROM pedidos p JOIN clientes c ON c.id = p.cliente_id JOIN usuarios u ON u.id = p.vendedor_id
+    ${where} ORDER BY p.id DESC LIMIT 200`).all(params)
+    .map((p) => ({ ...p, rotulo_status: ROTULOS[p.status] }));
+}
+
+module.exports = {
+  STATUS, ROTULOS, ErroNegocio,
+  criarPedido, revisarPedido, decidirPrecos, aceitarExpedicao, recusarExpedicao,
+  registrarPeso, concluirSeparacao, marcarImpresso, faturar, cancelar,
+  obterPedido, listarPedidos,
+};
