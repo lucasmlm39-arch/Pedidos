@@ -34,7 +34,8 @@ async function formPedido(alvo, { pedido = null, local = null, aoSalvar }) {
     cliente: base ? (pacote.clientes.find((c) => c.id === (pedido?.cliente_id ?? local.cliente.id))
       || { id: pedido?.cliente_id ?? local.cliente.id, razao_social: pedido?.cliente_nome ?? local.cliente.razao_social, nome_fantasia: pedido?.cliente_fantasia ?? local.cliente.nome_fantasia }) : null,
     catalogo: [],
-    itens: [],
+    linhas: new Map(), // produtoId -> { produto, quantidade, precoTexto }
+    soPedido: false,
     observacao: base?.observacao || '',
   };
 
@@ -45,12 +46,16 @@ async function formPedido(alvo, { pedido = null, local = null, aoSalvar }) {
     </section>
     <section class="cartao" data-area="produtos-sec" hidden>
       <h3>2. Produtos</h3>
-      <input type="search" class="input" data-campo="busca-produto" placeholder="Buscar produto por nome ou código" aria-label="Buscar produto">
-      <ul class="lista-produtos" data-area="catalogo"></ul>
+      <div class="filtro-produtos">
+        <input type="search" class="input" data-campo="busca-produto" placeholder="Buscar produto" aria-label="Buscar produto por nome ou código">
+        <button class="btn btn-peq" data-acao="so-pedido" aria-pressed="false">Só do pedido <span data-area="qtd-itens">0</span></button>
+      </div>
+      <div class="cab-produtos" aria-hidden="true"><span>Qtd.</span><span>Produto</span><span>Preço</span></div>
+      <ul class="grade-produtos" data-area="catalogo"></ul>
     </section>
     <section class="cartao" data-area="itens-sec" hidden>
-      <h3>3. Itens do pedido</h3>
-      <div data-area="itens"></div>
+      <h3>3. Conferir e enviar</h3>
+      <ul class="resumo-pedido" data-area="itens"></ul>
       <label class="rotulo">Observação
         <textarea class="input" data-campo="obs" rows="2" placeholder="Ex.: entregar pela manhã">${esc(estado.observacao)}</textarea>
       </label>
@@ -88,34 +93,27 @@ async function formPedido(alvo, { pedido = null, local = null, aoSalvar }) {
       </button></li>`).join('') || `<li>${vazio('Nenhum cliente encontrado')}</li>`;
   }
 
+  // Linha de um produto (criada na primeira vez que aparece ou recebe quantidade).
+  function linha(produto) {
+    if (!estado.linhas.has(produto.id)) {
+      estado.linhas.set(produto.id, { produto, quantidade: '', precoTexto: centavosParaTexto(produto.preco_centavos) });
+    }
+    return estado.linhas.get(produto.id);
+  }
+  const itensDoPedido = () => [...estado.linhas.values()].filter((it) => String(it.quantidade).trim() !== '');
+
   function escolherCliente(cliente) {
     estado.cliente = cliente;
     renderCliente();
     estado.catalogo = catalogoLocal(pacote, cliente.id);
-    // Ao trocar de cliente, reaplica os preços de tabela do novo cliente.
-    estado.itens = estado.itens
-      .map((it) => {
-        const produto = estado.catalogo.find((p) => p.id === it.produto.id);
-        return produto ? { ...it, produto, precoTexto: centavosParaTexto(produto.preco_centavos) } : null;
-      })
-      .filter(Boolean);
+    // Ao trocar de cliente, as quantidades ficam e os preços passam a ser os da tabela do novo cliente.
+    for (const [id, it] of estado.linhas) {
+      const produto = estado.catalogo.find((p) => p.id === id);
+      if (produto) Object.assign(it, { produto, precoTexto: centavosParaTexto(produto.preco_centavos) });
+    }
     $('[data-area="produtos-sec"]').hidden = false;
     renderCatalogo();
-    renderItens();
-  }
-
-  function renderCatalogo() {
-    const termo = ($('[data-campo="busca-produto"]').value || '').toLowerCase();
-    const noPedido = new Set(estado.itens.map((i) => i.produto.id));
-    const lista = estado.catalogo.filter((p) => !termo || p.descricao.toLowerCase().includes(termo) || p.codigo.toLowerCase().includes(termo));
-    $('[data-area="catalogo"]').innerHTML = lista.slice(0, 60).map((p) => `
-      <li class="${noPedido.has(p.id) ? 'no-pedido' : ''}">
-        <div><strong>${esc(p.descricao)}</strong><br>
-          <small>${esc(p.codigo)} · ${emUnidade(p) ? `pede em ${esc(p.unidade_pedido)}, cobra por kg` : `${esc(p.unidade)}${p.pesavel ? ' · pesável' : ''}`}</small></div>
-        <div class="preco-cat">${p.preco_centavos != null ? `${moeda(p.preco_centavos)}<small>/${esc(p.unidade)} · ${esc(p.tabela_nome)}</small>` : '<small class="txt-alerta">sem preço</small>'}</div>
-        <button class="btn btn-peq ${noPedido.has(p.id) ? '' : 'btn-primario'}" data-adicionar="${p.id}" ${noPedido.has(p.id) ? 'disabled' : ''}>
-          ${noPedido.has(p.id) ? 'Adicionado' : 'Adicionar'}</button>
-      </li>`).join('') || `<li>${vazio('Nenhum produto encontrado')}</li>`;
+    renderResumo();
   }
 
   const precoItem = (it) => textoParaCentavos(it.precoTexto);
@@ -126,35 +124,72 @@ async function formPedido(alvo, { pedido = null, local = null, aoSalvar }) {
   // Para itens pedidos em unidade e cobrados por kg, o total é estimado pelo peso médio.
   const pesoEstimado = (it) => (emUnidade(it.produto) ? numero(it.quantidade || 0) * (it.produto.peso_medio_kg || 0) : null);
   const totalItem = (it) => Math.round((emUnidade(it.produto) ? pesoEstimado(it) : numero(it.quantidade || 0)) * (precoItem(it) || 0));
+  const temQtd = (it) => String(it.quantidade).trim() !== '';
 
-  function renderItens() {
-    $('[data-area="itens-sec"]').hidden = estado.itens.length === 0;
-    $('[data-area="itens"]').innerHTML = estado.itens.map((it, idx) => `
-      <div class="item-pedido ${abaixo(it) ? 'linha-alerta' : ''}" data-idx="${idx}">
-        <div class="item-desc"><strong>${esc(it.produto.descricao)}</strong>
-          <small>${esc(it.produto.codigo)} · tabela ${it.produto.preco_centavos != null ? moeda(it.produto.preco_centavos) : '—'}</small>
-          ${emUnidade(it.produto) ? `<small class="txt-info" data-estimado>${it.produto.peso_medio_kg ? `≈ ${fmtKg(pesoEstimado(it))} kg · ` : ''}cobrado pelo peso real</small>` : ''}
-          ${abaixo(it) ? '<span class="selo selo-alerta">Precisa de aprovação</span>' : ''}</div>
-        <label class="rotulo-peq">Qtd. (${esc(unidadeQtd(it.produto))})${it.produto.pesavel && !emUnidade(it.produto) ? ' estimada' : ''}
-          <input class="input" type="text" inputmode="${aceitaFracao(it.produto) && !emUnidade(it.produto) ? 'decimal' : 'numeric'}" data-qtd value="${esc(it.quantidade)}"></label>
-        <label class="rotulo-peq">Preço (R$/${esc(it.produto.unidade)})
-          <input class="input" type="text" inputmode="decimal" data-preco value="${esc(it.precoTexto)}"></label>
-        <div class="item-total">${moeda(totalItem(it))}</div>
-        <button class="btn-icone" data-remover="${idx}" aria-label="Remover ${esc(it.produto.descricao)}">×</button>
-      </div>`).join('');
-    atualizarTotal();
+  function infoLinha(it) {
+    const p = it.produto;
+    const partes = [esc(p.codigo)];
+    partes.push(p.preco_centavos != null ? `tabela ${moeda(p.preco_centavos)}` : '<span class="txt-alerta">sem preço de tabela</span>');
+    if (emUnidade(p)) partes.push(temQtd(it) && p.peso_medio_kg ? `≈ ${fmtKg(pesoEstimado(it))} kg, cobrado pelo peso` : 'cobrado pelo peso');
+    else if (p.pesavel) partes.push('pesado na expedição');
+    return partes.join(' · ');
   }
 
-  function atualizarTotal() {
-    $('[data-area="total"]').textContent = moeda(estado.itens.reduce((s, it) => s + totalItem(it), 0));
-    $('[data-area="dica-aprovacao"]').hidden = !estado.itens.some(abaixo);
+  function htmlLinha(p) {
+    const it = linha(p);
+    const fracao = aceitaFracao(p) && !emUnidade(p);
+    return `<li class="linha-prod ${temQtd(it) ? 'no-pedido' : ''} ${temQtd(it) && abaixo(it) ? 'linha-alerta' : ''}" data-prod="${p.id}">
+      <label class="lp-qtd">
+        <input class="input" type="text" inputmode="${fracao ? 'decimal' : 'numeric'}" data-qtd-prod value="${esc(it.quantidade)}" placeholder="0"
+          aria-label="Quantidade de ${esc(p.descricao)} em ${esc(unidadeQtd(p))}">
+        <span>${esc(unidadeQtd(p))}</span>
+      </label>
+      <div class="lp-nome"><strong>${esc(p.descricao)}</strong><small data-info>${infoLinha(it)}</small></div>
+      <label class="lp-preco">
+        <input class="input" type="text" inputmode="decimal" data-preco-prod value="${esc(it.precoTexto)}" placeholder="0,00"
+          aria-label="Preço de ${esc(p.descricao)} por ${esc(p.unidade)}">
+        <span>R$/${esc(p.unidade)}</span>
+      </label>
+    </li>`;
+  }
+
+  function renderCatalogo() {
+    const termo = ($('[data-campo="busca-produto"]').value || '').toLowerCase();
+    let lista = estado.catalogo.filter((p) => !termo || p.descricao.toLowerCase().includes(termo) || p.codigo.toLowerCase().includes(termo));
+    if (estado.soPedido) lista = lista.filter((p) => estado.linhas.has(p.id) && temQtd(estado.linhas.get(p.id)));
+    $('[data-area="catalogo"]').innerHTML = lista.slice(0, 80).map(htmlLinha).join('')
+      || `<li>${vazio(estado.soPedido ? 'Nenhum produto no pedido ainda' : 'Nenhum produto encontrado')}</li>`;
+  }
+
+  // Atualiza só a linha alterada (sem redesenhar a lista, para não perder o foco do teclado).
+  function atualizarLinha(li, it) {
+    li.classList.toggle('no-pedido', temQtd(it));
+    li.classList.toggle('linha-alerta', temQtd(it) && abaixo(it));
+    li.querySelector('[data-info]').innerHTML = infoLinha(it);
+  }
+
+  function renderResumo() {
+    const itens = itensDoPedido();
+    $('[data-area="qtd-itens"]').textContent = itens.length;
+    $('[data-area="itens-sec"]').hidden = itens.length === 0;
+    $('[data-area="itens"]').innerHTML = itens.map((it) => `
+      <li class="${abaixo(it) ? 'linha-alerta' : ''}">
+        <span class="rp-qtd">${esc(it.quantidade)} ${esc(unidadeQtd(it.produto))}</span>
+        <span class="rp-nome">${esc(it.produto.descricao)}${abaixo(it) ? ' <span class="selo selo-alerta">Aprovação</span>' : ''}
+          <small>${esc(it.precoTexto || '—')} R$/${esc(it.produto.unidade)}${emUnidade(it.produto) ? ' · estimado' : ''}</small></span>
+        <span class="rp-total">${moeda(totalItem(it))}</span>
+        <button class="btn-icone" data-remover="${it.produto.id}" aria-label="Tirar ${esc(it.produto.descricao)} do pedido">×</button>
+      </li>`).join('');
+    $('[data-area="total"]').textContent = moeda(itens.reduce((s, it) => s + totalItem(it), 0));
+    $('[data-area="dica-aprovacao"]').hidden = !itens.some(abaixo);
   }
 
   // Validação local (o servidor valida de novo ao receber).
   function validar() {
     if (!estado.cliente) return 'Escolha o cliente';
-    if (!estado.itens.length) return 'Adicione ao menos um produto';
-    for (const it of estado.itens) {
+    const itens = itensDoPedido();
+    if (!itens.length) return 'Informe a quantidade de ao menos um produto';
+    for (const it of itens) {
       const q = numero(it.quantidade);
       if (!(q > 0)) return `Quantidade inválida em "${it.produto.descricao}"`;
       if ((emUnidade(it.produto) || !aceitaFracao(it.produto)) && !Number.isInteger(q)) return `"${it.produto.descricao}" é pedido em ${unidadeQtd(it.produto)}: use quantidade inteira`;
@@ -167,47 +202,47 @@ async function formPedido(alvo, { pedido = null, local = null, aoSalvar }) {
     if (e.target.matches('[data-campo="busca-cliente"]')) buscarClientes(e.target.value);
     if (e.target.matches('[data-campo="busca-produto"]')) renderCatalogo();
     if (e.target.matches('[data-campo="obs"]')) estado.observacao = e.target.value;
-    const linha = e.target.closest('[data-idx]');
-    if (linha) {
-      const it = estado.itens[Number(linha.dataset.idx)];
-      if (e.target.matches('[data-qtd]')) it.quantidade = e.target.value;
-      if (e.target.matches('[data-preco]')) it.precoTexto = e.target.value;
-      linha.querySelector('.item-total').textContent = moeda(totalItem(it));
-      const est = linha.querySelector('[data-estimado]');
-      if (est && it.produto.peso_medio_kg) est.textContent = `≈ ${fmtKg(pesoEstimado(it))} kg · cobrado pelo peso real`;
-      linha.classList.toggle('linha-alerta', abaixo(it));
-      atualizarTotal();
+    const li = e.target.closest('[data-prod]');
+    if (li) {
+      const it = estado.linhas.get(Number(li.dataset.prod));
+      if (e.target.matches('[data-qtd-prod]')) it.quantidade = e.target.value;
+      if (e.target.matches('[data-preco-prod]')) it.precoTexto = e.target.value;
+      atualizarLinha(li, it);
+      renderResumo();
     }
   });
-  alvo.addEventListener('change', (e) => {
-    if (e.target.matches('[data-preco]')) renderItens(); // atualiza o selo de aprovação
+
+  // Enter na quantidade pula para a quantidade do próximo produto.
+  alvo.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter' || !e.target.matches('[data-qtd-prod], [data-preco-prod]')) return;
+    e.preventDefault();
+    const todas = [...alvo.querySelectorAll('[data-qtd-prod]')];
+    const atual = e.target.closest('[data-prod]').querySelector('[data-qtd-prod]');
+    todas[todas.indexOf(atual) + 1]?.focus();
   });
 
   alvo.addEventListener('click', async (e) => {
     const cli = e.target.closest('[data-cliente]');
     if (cli) return escolherCliente(clientesListados.find((x) => x.id === Number(cli.dataset.cliente)));
     if (e.target.closest('[data-acao="trocar-cliente"]')) return renderCliente(true);
-    const add = e.target.closest('[data-adicionar]');
-    if (add) {
-      const produto = estado.catalogo.find((p) => p.id === Number(add.dataset.adicionar));
-      estado.itens.push({ produto, quantidade: '1', precoTexto: centavosParaTexto(produto.preco_centavos) });
-      renderCatalogo();
-      renderItens();
-      const inputs = alvo.querySelectorAll('[data-qtd]');
-      inputs[inputs.length - 1]?.select();
-      return;
+    const filtro = e.target.closest('[data-acao="so-pedido"]');
+    if (filtro) {
+      estado.soPedido = !estado.soPedido;
+      filtro.setAttribute('aria-pressed', String(estado.soPedido));
+      return renderCatalogo();
     }
     const rem = e.target.closest('[data-remover]');
     if (rem) {
-      estado.itens.splice(Number(rem.dataset.remover), 1);
+      const it = estado.linhas.get(Number(rem.dataset.remover));
+      it.quantidade = '';
       renderCatalogo();
-      return renderItens();
+      return renderResumo();
     }
     const enviar = e.target.closest('[data-acao="enviar"]');
     if (!enviar) return;
     const problema = validar();
     if (problema) return toast(problema, 'erro');
-    const itens = estado.itens.map((it) => ({
+    const itens = itensDoPedido().map((it) => ({
       produto_id: it.produto.id,
       quantidade: numero(it.quantidade),
       preco_centavos: precoItem(it),
@@ -220,7 +255,7 @@ async function formPedido(alvo, { pedido = null, local = null, aoSalvar }) {
       cliente: { id: c.id, razao_social: c.razao_social, nome_fantasia: c.nome_fantasia, codigo: c.codigo },
       observacao: estado.observacao.trim() || null,
       itens,
-      total_centavos: estado.itens.reduce((s, it) => s + totalItem(it), 0),
+      total_centavos: itensDoPedido().reduce((s, it) => s + totalItem(it), 0),
     };
     enviar.disabled = true;
     try {
@@ -252,15 +287,18 @@ async function formPedido(alvo, { pedido = null, local = null, aoSalvar }) {
   });
 
   if (base) {
+    for (const i of base.itens) {
+      const produto = { id: i.produto_id, descricao: i.descricao, codigo: i.codigo, unidade: i.unidade, pesavel: i.pesavel, unidade_pedido: i.unidade_pedido, preco_centavos: i.preco_tabela_centavos };
+      estado.linhas.set(i.produto_id, { produto, quantidade: String(i.quantidade).replace('.', ','), precoTexto: centavosParaTexto(i.preco_centavos) });
+    }
+    // Reaplica os dados atuais do produto, mas mantém o preço que já estava no pedido.
+    const precos = new Map([...estado.linhas].map(([id, it]) => [id, it.precoTexto]));
     escolherCliente(estado.cliente);
-    estado.itens = base.itens.map((i) => ({
-      produto: estado.catalogo.find((p) => p.id === i.produto_id)
-        || { id: i.produto_id, descricao: i.descricao, codigo: i.codigo, unidade: i.unidade, pesavel: i.pesavel, unidade_pedido: i.unidade_pedido, preco_centavos: i.preco_tabela_centavos },
-      quantidade: String(i.quantidade).replace('.', ','),
-      precoTexto: centavosParaTexto(i.preco_centavos),
-    }));
+    for (const [id, preco] of precos) estado.linhas.get(id).precoTexto = preco;
+    estado.soPedido = true;
+    $('[data-acao="so-pedido"]').setAttribute('aria-pressed', 'true');
     renderCatalogo();
-    renderItens();
+    renderResumo();
   } else {
     renderCliente();
   }
