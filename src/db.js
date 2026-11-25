@@ -122,6 +122,15 @@ const MIGRACOES = [
   ['pedidos', 'exportado_em', 'TEXT'],
   ['pedidos', 'uuid', 'TEXT'],
   ['pedidos', 'lancado_em', 'TEXT'],
+  // Venda em unidade/caixa com cobrança por kg (ex.: 10 abacaxis cobrados pelo peso)
+  ['produtos', 'unidade_pedido', 'TEXT'],          // unidade em que o vendedor pede (UN, CX…); vazio = pede na unidade de cobrança
+  ['produtos', 'peso_medio_kg', 'REAL'],           // peso médio de 1 unidade_pedido, para estimar o valor do pedido
+  ['produtos', 'tara_kg', 'REAL'],                 // peso de cada caixa/embalagem, descontado na pesagem
+  ['pedido_itens', 'unidade_pedido', 'TEXT'],
+  ['pedido_itens', 'peso_estimado_kg', 'REAL'],
+  ['pedido_itens', 'peso_bruto', 'REAL'],          // peso lido na balança
+  ['pedido_itens', 'caixas', 'INTEGER'],           // nº de caixas pesadas junto
+  ['pedido_itens', 'tara_kg', 'REAL'],             // tara por caixa usada no cálculo
 ];
 
 function migrar(db) {

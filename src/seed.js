@@ -32,7 +32,8 @@ function popularDemonstracao(db) {
     cli.run('C004', 'Quitanda do Zé', 'Quitanda do Zé', '456.789.012-34', 'Valinhos', 'SP', g('Quitandas'));
     cli.run('C005', 'Sacolão Alfa S/A', 'Sacolão Alfa', '45.678.901/0001-23', 'Sumaré', 'SP', null);
 
-    const prod = db.prepare('INSERT OR IGNORE INTO produtos (codigo, descricao, unidade, pesavel) VALUES (?, ?, ?, ?)');
+    const prod = db.prepare(`INSERT OR IGNORE INTO produtos (codigo, descricao, unidade, pesavel, unidade_pedido, peso_medio_kg, tara_kg)
+                             VALUES (?, ?, ?, ?, ?, ?, ?)`);
     const produtos = [
       // código, descrição, unidade, pesável, preço tabela padrão (centavos)
       ['P001', 'Tomate Italiano (caixa 18 kg)', 'CX', 0, 9890],
@@ -45,8 +46,12 @@ function popularDemonstracao(db) {
       ['P008', 'Ovos Brancos (dúzia)', 'DZ', 0, 1090],
       ['P009', 'Mamão Formosa', 'KG', 1, 590],
       ['P010', 'Couve Manteiga (maço)', 'MÇ', 0, 220],
+      // Pedido em unidades/caixas e cobrado pelo peso (tara = peso da caixa vazia)
+      ['P011', 'Abacaxi Pérola', 'KG', 1, 450, 'UN', 1.8, 2],
+      ['P012', 'Tomate Salada (caixa, por kg)', 'KG', 1, 560, 'CX', 20, 2],
     ];
-    produtos.forEach(([c, d, u, p]) => prod.run(c, d, u, p));
+    produtos.forEach(([c, d, u, p, , unPed = null, pesoMedio = null, tara = null]) =>
+      prod.run(c, d, u, p, unPed, pesoMedio, tara ?? (p ? 2 : null)));
     const pid = (codigo) => db.prepare('SELECT id FROM produtos WHERE codigo = ?').get(codigo).id;
 
     const tab = db.prepare('INSERT OR IGNORE INTO tabelas_preco (nome, padrao) VALUES (?, ?)');

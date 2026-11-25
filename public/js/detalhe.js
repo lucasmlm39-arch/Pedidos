@@ -9,24 +9,67 @@ export function imprimirPedido(id) {
 const pode = (...papeis) => sessao.usuario.papel === 'gestor' || papeis.includes(sessao.usuario.papel);
 
 const fracionado = (i) => Boolean(i.pesavel) || String(i.unidade).toUpperCase() === 'KG';
+const num = (v) => String(v).replace('.', ',');
+const kg = (v) => Number(v).toLocaleString('pt-BR', { maximumFractionDigits: 3 });
+
+// Aceita soma de pesagens: "12,5 + 10,9" (várias pesadas do mesmo item).
+export function somarPesagens(texto) {
+  const partes = String(texto || '').split('+').map((t) => t.trim()).filter(Boolean);
+  if (!partes.length) return null;
+  // "1.234,5" ou "23,4" (vírgula decimal) e também "23.4" (teclado com ponto).
+  const valor = (t) => Number(t.includes(',') ? t.replace(/\./g, '').replace(',', '.') : t);
+  const total = partes.reduce((s, t) => s + valor(t), 0);
+  return Number.isFinite(total) ? Math.round(total * 1000) / 1000 : NaN;
+}
+
+const taraDo = (i) => i.tara_kg ?? i.tara_produto_kg ?? 0;
+const caixasPadrao = (i) => i.caixas ?? (i.unidade_pedido === 'CX' ? i.quantidade : '');
+
+// Pesáveis: peso bruto da balança - caixas x tara = líquido cobrado.
+function campoPesagem(i) {
+  const falta = i.peso_real === 0;
+  const bruto = i.peso_bruto ?? (i.peso_real > 0 ? i.peso_real : null);
+  return `<div class="pesagem" data-pesagem="${i.id}" data-tara="${taraDo(i)}">
+    <label class="pesagem-campo">Caixas
+      <span><input class="input-peso input-caixas" type="text" inputmode="numeric" data-caixas value="${esc(caixasPadrao(i))}" placeholder="0"
+        aria-label="Caixas de ${esc(i.descricao)}"> × ${kg(taraDo(i))} kg</span></label>
+    <label class="pesagem-campo">Peso bruto
+      <span><input class="input-peso ${i.peso_real != null ? 'preenchido' : 'obrigatorio'}" type="text" inputmode="decimal"
+        data-bruto value="${bruto != null ? num(bruto) : ''}" placeholder="balança" aria-label="Peso bruto de ${esc(i.descricao)}"> kg</span></label>
+    <div class="pesagem-liquido">Líquido <strong data-liquido>${i.peso_real != null ? `${kg(i.peso_real)} kg` : '—'}</strong></div>
+    <button class="btn btn-peq ${falta ? 'btn-perigo' : ''}" data-falta="${i.id}" title="Item em falta">Falta</button>
+  </div>`;
+}
 
 function campoSeparacao(i) {
+  if (i.pesavel) return campoPesagem(i);
   const falta = i.peso_real === 0;
   return `<div class="campo-separacao">
-    <input class="input-peso ${i.peso_real != null ? 'preenchido' : ''} ${i.pesavel && i.peso_real == null ? 'obrigatorio' : ''}"
+    <input class="input-peso ${i.peso_real != null ? 'preenchido' : ''}"
       type="text" inputmode="${fracionado(i) ? 'decimal' : 'numeric'}" data-peso="${i.id}"
-      value="${i.peso_real != null ? String(i.peso_real).replace('.', ',') : ''}"
-      placeholder="${i.pesavel ? 'pesar' : String(i.quantidade).replace('.', ',')}"
-      aria-label="${i.pesavel ? 'Peso em kg' : 'Quantidade atendida'} de ${esc(i.descricao)}">
-    <span class="un-peso">${i.pesavel ? 'kg' : esc(i.unidade)}</span>
+      value="${i.peso_real != null ? num(i.peso_real) : ''}"
+      placeholder="${num(i.quantidade)}"
+      aria-label="Quantidade atendida de ${esc(i.descricao)}">
+    <span class="un-peso">${esc(i.unidade)}</span>
     <button class="btn btn-peq ${falta ? 'btn-perigo' : ''}" data-falta="${i.id}" title="Item em falta">Falta</button>
   </div>`;
 }
 
 function valorSeparado(i) {
   if (i.peso_real === 0) return '<span class="selo selo-perigo">Em falta</span>';
-  if (i.peso_real != null) return qtd(i.peso_real, i.pesavel ? 'kg' : i.unidade);
+  if (i.peso_real != null) {
+    const detalhe = i.peso_bruto != null && i.caixas
+      ? `<br><small>bruto ${kg(i.peso_bruto)} − ${i.caixas} cx × ${kg(i.tara_kg)} kg</small>` : '';
+    return qtd(i.peso_real, i.pesavel ? 'kg' : i.unidade) + detalhe;
+  }
   return i.pesavel ? '<small>a pesar</small>' : '—';
+}
+
+function colunaQtd(i) {
+  if (i.unidade_pedido) {
+    return `${qtd(i.quantidade, i.unidade_pedido)}<br><small>${i.peso_estimado_kg ? `≈ ${kg(i.peso_estimado_kg)} kg` : 'cobrado por kg'}</small>`;
+  }
+  return `${qtd(i.quantidade, i.unidade)}${i.pesavel ? '<br><small>(estimado)</small>' : ''}`;
 }
 
 function linhaItem(p, i) {
@@ -45,9 +88,9 @@ function linhaItem(p, i) {
        </div>` : '';
   return `<tr class="${abaixo ? 'linha-alerta' : ''}">
     <td><strong>${esc(i.descricao)}</strong><br><small>${esc(i.codigo)}${i.pesavel ? ' · pesável' : ''}</small> ${aprov}${decidir}</td>
-    <td class="num">${qtd(i.quantidade, i.unidade)}${i.pesavel ? '<br><small>(estimado)</small>' : ''}</td>
+    <td class="num">${colunaQtd(i)}</td>
     <td class="num">${separando ? campoSeparacao(i) : valorSeparado(i)}</td>
-    <td class="num">${moeda(i.preco_centavos)}${i.preco_tabela_centavos != null
+    <td class="num">${moeda(i.preco_centavos)}${i.pesavel ? '<small>/kg</small>' : ''}${i.preco_tabela_centavos != null
       ? `<br><small class="${abaixo ? 'txt-alerta' : ''}">tabela ${moeda(i.preco_tabela_centavos)}</small>`
       : '<br><small class="txt-alerta">sem tabela</small>'}</td>
     <td class="num">${moeda(i.total_centavos)}</td>
@@ -91,7 +134,7 @@ function render(p) {
       <thead><tr><th>Produto</th><th class="num">Qtd.</th><th class="num">${p.status === 'EM_SEPARACAO' ? 'Peso / qtd. atendida' : 'Peso / atendido'}</th><th class="num">Preço</th><th class="num">Total</th></tr></thead>
       <tbody>${p.itens.map((i) => linhaItem(p, i)).join('')}</tbody>
     </table></div>
-    ${p.status === 'EM_SEPARACAO' && pode('expedicao') ? '<p class="dica">Pesáveis: informe o peso. Demais itens: deixe vazio se atendeu tudo, digite a quantidade se atendeu parcial, ou toque em <strong>Falta</strong>.</p>' : ''}
+    ${p.status === 'EM_SEPARACAO' && pode('expedicao') ? '<p class="dica">Pesáveis: digite o <strong>peso bruto</strong> da balança (várias pesadas: 12,5+10,9) e o nº de <strong>caixas</strong>; a tara é descontada sozinha. Demais itens: deixe vazio se atendeu tudo, digite a quantidade se foi parcial, ou toque em <strong>Falta</strong>.</p>' : ''}
     <div class="barra-acoes">${acoes(p)}</div>
     <details class="historico"><summary>Histórico (${p.historico.length})</summary>
       <ol>${p.historico.map((h) => `<li><time>${dataHora(h.criado_em)}</time> ${esc(h.descricao || h.status_novo)} <small>— ${esc(h.usuario_nome || '')}</small></li>`).join('')}</ol>
@@ -117,21 +160,47 @@ export async function montarDetalhe(el, id, { aoMudar = () => {}, fechar = () =>
   };
   await tentar(atualizar).catch(fechar);
 
+  // Prévia do líquido enquanto digita.
+  el.addEventListener('input', (e) => {
+    const bloco = e.target.closest('[data-pesagem]');
+    if (!bloco) return;
+    const bruto = somarPesagens(bloco.querySelector('[data-bruto]').value);
+    const caixas = Number(bloco.querySelector('[data-caixas]').value || 0);
+    const liquido = bruto == null || Number.isNaN(bruto) ? null : Math.round((bruto - caixas * Number(bloco.dataset.tara)) * 1000) / 1000;
+    const alvo = bloco.querySelector('[data-liquido]');
+    alvo.textContent = liquido == null ? '—' : `${kg(liquido)} kg`;
+    alvo.classList.toggle('txt-perigo', liquido != null && !(liquido > 0));
+  });
+
+  const salvarItem = async (itemId, corpo, campo) => {
+    const ordem = [...el.querySelectorAll('[data-bruto], [data-peso]')];
+    const pos = ordem.indexOf(campo);
+    try {
+      await tentar(async () => feito(await api('PUT', `/api/pedidos/${id}/itens/${itemId}/peso`, corpo)));
+      // Vai direto para o próximo item pesável ainda sem peso (agiliza no tablet).
+      const novos = [...el.querySelectorAll('[data-bruto], [data-peso]')];
+      novos.slice(pos + 1).find((c) => c.classList.contains('obrigatorio'))?.focus();
+    } catch { /* erro já exibido */ }
+  };
+
   el.addEventListener('change', async (e) => {
+    const bloco = e.target.closest('[data-pesagem]');
+    if (bloco) {
+      const textoBruto = bloco.querySelector('[data-bruto]').value.trim();
+      const caixasTxt = bloco.querySelector('[data-caixas]').value.trim();
+      if (!textoBruto) {
+        if (e.target.matches('[data-bruto]')) await salvarItem(bloco.dataset.pesagem, { peso: null }, e.target);
+        return;
+      }
+      const bruto = somarPesagens(textoBruto);
+      if (Number.isNaN(bruto)) return toast('Peso bruto inválido', 'erro');
+      await salvarItem(bloco.dataset.pesagem, { peso_bruto: bruto, caixas: caixasTxt === '' ? 0 : Number(caixasTxt) }, bloco.querySelector('[data-bruto]'));
+      return;
+    }
     const campo = e.target.closest('[data-peso]');
     if (!campo) return;
     const peso = campo.value.trim() === '' ? null : numero(campo.value);
-    const campos = [...el.querySelectorAll('[data-peso]')];
-    const pos = campos.indexOf(campo);
-    try {
-      await tentar(async () => feito(await api('PUT', `/api/pedidos/${id}/itens/${campo.dataset.peso}/peso`, { peso })));
-      // Vai direto para o próximo item pesável ainda sem peso (agiliza no tablet).
-      const novos = [...el.querySelectorAll('[data-peso]')];
-      const proximo = novos.slice(pos + 1).find((c) => c.classList.contains('obrigatorio'));
-      proximo?.focus();
-    } catch {
-      el.querySelector(`[data-peso="${campo.dataset.peso}"]`)?.focus();
-    }
+    await salvarItem(campo.dataset.peso, { peso }, campo);
   });
 
   el.addEventListener('click', async (e) => {

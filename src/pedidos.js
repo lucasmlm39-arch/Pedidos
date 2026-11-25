@@ -33,10 +33,17 @@ const agora = () => new Date().toISOString().replace('T', ' ').slice(0, 19);
 
 // Produtos pesáveis ou vendidos em KG aceitam quantidade fracionada (ex.: 2,5 kg).
 const aceitaFracao = (p) => Boolean(p.pesavel) || String(p.unidade).toUpperCase() === 'KG';
+// Produto pesável pedido em outra unidade (UN, CX…) e cobrado por kg.
+const pedidoEmUnidade = (p) => Boolean(p.pesavel && p.unidade_pedido && p.unidade_pedido.toUpperCase() !== 'KG');
 
+// Quantidade que é cobrada: peso/qtd. registrada pela expedição; antes disso, a estimativa.
 function quantidadeFinal(item) {
-  return item.peso_real ?? item.quantidade;
+  if (item.peso_real != null) return item.peso_real;
+  if (item.unidade_pedido) return item.peso_estimado_kg ?? 0;
+  return item.quantidade;
 }
+
+const arred3 = (n) => Math.round(n * 1000) / 1000;
 
 function calcularTotal(itens) {
   return itens.reduce((s, i) => s + Math.round(quantidadeFinal(i) * i.preco_centavos), 0);
@@ -79,8 +86,9 @@ function montarItens(db, clienteId, itens) {
     vistos.add(produtoId);
     const quantidade = Number(i.quantidade);
     if (!(quantidade > 0)) throw new ErroNegocio(`Quantidade inválida para "${produto.descricao}"`);
-    if (!aceitaFracao(produto) && !Number.isInteger(quantidade)) {
-      throw new ErroNegocio(`"${produto.descricao}" é vendido por ${produto.unidade}: use quantidade inteira`);
+    const emUnidade = pedidoEmUnidade(produto);
+    if ((emUnidade || !aceitaFracao(produto)) && !Number.isInteger(quantidade)) {
+      throw new ErroNegocio(`"${produto.descricao}" é pedido em ${emUnidade ? produto.unidade_pedido : produto.unidade}: use quantidade inteira`);
     }
     const tabela = produto.preco_centavos ?? null;
     const preco = i.preco_centavos == null ? tabela : Math.round(Number(i.preco_centavos));
@@ -94,6 +102,8 @@ function montarItens(db, clienteId, itens) {
       tabela_id: produto.tabela_id ?? null,
       aprovacao: precisaAprovar ? 'pendente' : 'nao_necessaria',
       peso_real: null,
+      unidade_pedido: emUnidade ? produto.unidade_pedido.toUpperCase() : null,
+      peso_estimado_kg: emUnidade && produto.peso_medio_kg ? arred3(quantidade * produto.peso_medio_kg) : null,
     };
   });
 }
@@ -101,10 +111,11 @@ function montarItens(db, clienteId, itens) {
 function gravarItens(db, pedidoId, itens) {
   db.prepare('DELETE FROM pedido_itens WHERE pedido_id = ?').run(pedidoId);
   const ins = db.prepare(`INSERT INTO pedido_itens
-    (pedido_id, produto_id, quantidade, preco_centavos, preco_tabela_centavos, tabela_id, aprovacao)
-    VALUES (?, ?, ?, ?, ?, ?, ?)`);
+    (pedido_id, produto_id, quantidade, preco_centavos, preco_tabela_centavos, tabela_id, aprovacao, unidade_pedido, peso_estimado_kg)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`);
   for (const i of itens) {
-    ins.run(pedidoId, i.produto_id, i.quantidade, i.preco_centavos, i.preco_tabela_centavos, i.tabela_id, i.aprovacao);
+    ins.run(pedidoId, i.produto_id, i.quantidade, i.preco_centavos, i.preco_tabela_centavos, i.tabela_id, i.aprovacao,
+      i.unidade_pedido, i.peso_estimado_kg);
   }
 }
 
@@ -231,7 +242,7 @@ function recusarExpedicao(db, ev, usuario, id, motivo) {
   transacao(db, () => {
     const p = buscarPedidoBruto(db, id);
     exigirStatus(p, STATUS.AGUARDANDO_EXPEDICAO, STATUS.EM_SEPARACAO);
-    db.prepare('UPDATE pedido_itens SET peso_real = NULL WHERE pedido_id = ?').run(p.id);
+    db.prepare('UPDATE pedido_itens SET peso_real = NULL, peso_bruto = NULL, caixas = NULL, tara_kg = NULL WHERE pedido_id = ?').run(p.id);
     mudarStatus(db, p, usuario, STATUS.REVISAO, `Recusado pela expedição: ${motivo}`, { motivo_status: String(motivo) });
   });
   const pedido = obterPedido(db, id);
@@ -239,21 +250,44 @@ function recusarExpedicao(db, ev, usuario, id, motivo) {
   return pedido;
 }
 
-// Expedição informa o peso real (pesáveis) ou a quantidade atendida (demais). 0 = item em falta.
-// valor null/'' limpa o registro (volta a valer a quantidade pedida).
-function registrarPeso(db, ev, usuario, id, itemId, peso) {
-  const limpar = peso === null || peso === '';
-  const valor = Number(peso);
-  if (!limpar && !(valor >= 0)) throw new ErroNegocio('Valor inválido');
+// Expedição registra o item:
+//  - pesáveis: { peso_bruto, caixas } -> líquido = bruto - caixas x tara do produto (ou { peso } já líquido)
+//  - demais:   { peso } = quantidade atendida
+//  0 = item em falta; null/'' limpa o registro.
+function registrarPeso(db, ev, usuario, id, itemId, dados) {
+  const d = typeof dados === 'object' && dados !== null ? dados : { peso: dados };
+  const temBruto = d.peso_bruto != null && d.peso_bruto !== '';
+  const limpar = !temBruto && (d.peso === null || d.peso === '' || d.peso === undefined);
   transacao(db, () => {
     const p = buscarPedidoBruto(db, id);
     exigirStatus(p, STATUS.EM_SEPARACAO);
-    const item = db.prepare(`SELECT i.id, pr.pesavel, pr.unidade FROM pedido_itens i JOIN produtos pr ON pr.id = i.produto_id
+    const item = db.prepare(`SELECT i.id, pr.pesavel, pr.unidade, pr.tara_kg FROM pedido_itens i JOIN produtos pr ON pr.id = i.produto_id
                              WHERE i.id = ? AND i.pedido_id = ?`).get(Number(itemId), p.id);
     if (!item) throw new ErroNegocio('Item não encontrado', 404);
-    if (!limpar && !aceitaFracao(item) && !Number.isInteger(valor)) throw new ErroNegocio(`Quantidade em ${item.unidade} deve ser inteira`);
-    db.prepare('UPDATE pedido_itens SET peso_real = ? WHERE id = ?').run(limpar ? null : Math.round(valor * 1000) / 1000, item.id);
-    const itens = db.prepare('SELECT quantidade, peso_real, preco_centavos FROM pedido_itens WHERE pedido_id = ?').all(p.id);
+    let liquido = null;
+    let bruto = null;
+    let caixas = null;
+    let tara = null;
+    if (temBruto) {
+      if (!item.pesavel) throw new ErroNegocio('Peso bruto só se aplica a produtos pesáveis');
+      bruto = Number(d.peso_bruto);
+      caixas = d.caixas == null || d.caixas === '' ? 0 : Number(d.caixas);
+      tara = Number(d.tara_kg ?? item.tara_kg ?? 0);
+      if (!(bruto > 0)) throw new ErroNegocio('Peso bruto inválido');
+      if (!(caixas >= 0) || !Number.isInteger(caixas)) throw new ErroNegocio('Número de caixas inválido');
+      if (!(tara >= 0)) throw new ErroNegocio('Tara inválida');
+      liquido = arred3(bruto - caixas * tara);
+      if (!(liquido > 0)) throw new ErroNegocio(`Peso líquido ficou ${liquido} kg: confira o peso bruto e o número de caixas`);
+      bruto = arred3(bruto);
+    } else if (!limpar) {
+      liquido = Number(d.peso);
+      if (!(liquido >= 0)) throw new ErroNegocio('Valor inválido');
+      if (!aceitaFracao(item) && !Number.isInteger(liquido)) throw new ErroNegocio(`Quantidade em ${item.unidade} deve ser inteira`);
+      liquido = arred3(liquido);
+    }
+    db.prepare('UPDATE pedido_itens SET peso_real = ?, peso_bruto = ?, caixas = ?, tara_kg = ? WHERE id = ?')
+      .run(liquido, bruto, caixas, tara, item.id);
+    const itens = db.prepare('SELECT quantidade, peso_real, preco_centavos, unidade_pedido, peso_estimado_kg FROM pedido_itens WHERE pedido_id = ?').all(p.id);
     db.prepare('UPDATE pedidos SET total_centavos = ?, atualizado_em = ? WHERE id = ?').run(calcularTotal(itens), agora(), p.id);
   });
   const pedido = obterPedido(db, id);
@@ -325,7 +359,7 @@ function obterPedido(db, id) {
   if (!p) throw new ErroNegocio('Pedido não encontrado', 404);
   p.rotulo_status = ROTULOS[p.status];
   p.itens = db.prepare(`
-    SELECT i.*, pr.codigo, pr.descricao, pr.unidade, pr.pesavel, t.nome AS tabela_nome
+    SELECT i.*, pr.codigo, pr.descricao, pr.unidade, pr.pesavel, pr.tara_kg AS tara_produto_kg, t.nome AS tabela_nome
     FROM pedido_itens i JOIN produtos pr ON pr.id = i.produto_id
     LEFT JOIN tabelas_preco t ON t.id = i.tabela_id
     WHERE i.pedido_id = ? ORDER BY i.id`).all(p.id)

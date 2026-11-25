@@ -1,7 +1,7 @@
 // Service worker: guarda as telas do sistema no aparelho para abrir sem internet.
 // Estratégia "rede primeiro": online sempre pega a versão nova; offline usa a cópia guardada.
 // Os dados (clientes, preços, pedidos) ficam no IndexedDB, não aqui.
-const CACHE = 'pedidos-v2';
+const CACHE = 'pedidos-v3';
 const ARQUIVOS = [
   '/', '/index.html', '/impressao.html', '/manifest.webmanifest', '/css/app.css',
   '/js/app.js', '/js/util.js', '/js/offline.js', '/js/vendedor.js', '/js/detalhe.js',

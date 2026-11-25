@@ -319,3 +319,19 @@ main.expedicao-tablet {
   .expedicao-tablet .tabela td:nth-child(2), .expedicao-tablet .tabela td:nth-child(4) { text-align: left; }
   .expedicao-tablet .input-peso { width: 96px; }
 }
+
+/* ---------- Pesagem com tara ---------- */
+.txt-info { color: var(--info); display: block; }
+.pesagem { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: flex-end; gap: 8px 12px; }
+.pesagem-campo { display: flex; flex-direction: column; align-items: flex-start; font-size: .75rem; color: var(--texto-suave); text-align: left; }
+.pesagem-campo span { display: inline-flex; align-items: center; gap: 4px; color: var(--texto); font-size: .85rem; }
+.input-caixas { width: 64px !important; }
+.pesagem-liquido { display: flex; flex-direction: column; font-size: .75rem; color: var(--texto-suave); text-align: left; min-width: 88px; }
+.pesagem-liquido strong { font-size: 1.05rem; color: var(--ok); }
+.pesagem-liquido strong.txt-perigo { color: var(--perigo); }
+.expedicao-tablet .pesagem-liquido strong { font-size: 1.3rem; }
+.expedicao-tablet .input-caixas { width: 72px !important; }
+@media (max-width: 600px) {
+  .expedicao-tablet .tabela td:nth-child(3) { grid-column: 1 / -1; }
+  .pesagem { justify-content: flex-start; }
+}

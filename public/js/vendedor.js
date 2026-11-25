@@ -7,6 +7,10 @@ import {
 } from './offline.js';
 
 const aceitaFracao = (p) => Boolean(p.pesavel) || String(p.unidade).toUpperCase() === 'KG';
+// Pesável pedido em unidade/caixa e cobrado por kg (ex.: 10 abacaxis).
+const emUnidade = (p) => Boolean(p.pesavel && p.unidade_pedido && p.unidade_pedido.toUpperCase() !== 'KG');
+const unidadeQtd = (p) => (emUnidade(p) ? p.unidade_pedido : p.unidade);
+const fmtKg = (n) => Number(n).toLocaleString('pt-BR', { maximumFractionDigits: 1 });
 
 async function obterPacote() {
   const local = await pacoteLocal();
@@ -107,7 +111,7 @@ async function formPedido(alvo, { pedido = null, local = null, aoSalvar }) {
     $('[data-area="catalogo"]').innerHTML = lista.slice(0, 60).map((p) => `
       <li class="${noPedido.has(p.id) ? 'no-pedido' : ''}">
         <div><strong>${esc(p.descricao)}</strong><br>
-          <small>${esc(p.codigo)} · ${esc(p.unidade)}${p.pesavel ? ' · pesável' : ''}</small></div>
+          <small>${esc(p.codigo)} · ${emUnidade(p) ? `pede em ${esc(p.unidade_pedido)}, cobra por kg` : `${esc(p.unidade)}${p.pesavel ? ' · pesável' : ''}`}</small></div>
         <div class="preco-cat">${p.preco_centavos != null ? `${moeda(p.preco_centavos)}<small>/${esc(p.unidade)} · ${esc(p.tabela_nome)}</small>` : '<small class="txt-alerta">sem preço</small>'}</div>
         <button class="btn btn-peq ${noPedido.has(p.id) ? '' : 'btn-primario'}" data-adicionar="${p.id}" ${noPedido.has(p.id) ? 'disabled' : ''}>
           ${noPedido.has(p.id) ? 'Adicionado' : 'Adicionar'}</button>
@@ -119,7 +123,9 @@ async function formPedido(alvo, { pedido = null, local = null, aoSalvar }) {
     const preco = precoItem(it);
     return it.produto.preco_centavos == null || (preco != null && preco < it.produto.preco_centavos);
   }
-  const totalItem = (it) => Math.round(numero(it.quantidade || 0) * (precoItem(it) || 0));
+  // Para itens pedidos em unidade e cobrados por kg, o total é estimado pelo peso médio.
+  const pesoEstimado = (it) => (emUnidade(it.produto) ? numero(it.quantidade || 0) * (it.produto.peso_medio_kg || 0) : null);
+  const totalItem = (it) => Math.round((emUnidade(it.produto) ? pesoEstimado(it) : numero(it.quantidade || 0)) * (precoItem(it) || 0));
 
   function renderItens() {
     $('[data-area="itens-sec"]').hidden = estado.itens.length === 0;
@@ -127,9 +133,10 @@ async function formPedido(alvo, { pedido = null, local = null, aoSalvar }) {
       <div class="item-pedido ${abaixo(it) ? 'linha-alerta' : ''}" data-idx="${idx}">
         <div class="item-desc"><strong>${esc(it.produto.descricao)}</strong>
           <small>${esc(it.produto.codigo)} · tabela ${it.produto.preco_centavos != null ? moeda(it.produto.preco_centavos) : '—'}</small>
+          ${emUnidade(it.produto) ? `<small class="txt-info" data-estimado>${it.produto.peso_medio_kg ? `≈ ${fmtKg(pesoEstimado(it))} kg · ` : ''}cobrado pelo peso real</small>` : ''}
           ${abaixo(it) ? '<span class="selo selo-alerta">Precisa de aprovação</span>' : ''}</div>
-        <label class="rotulo-peq">Qtd. (${esc(it.produto.unidade)})${it.produto.pesavel ? ' estimada' : ''}
-          <input class="input" type="text" inputmode="${aceitaFracao(it.produto) ? 'decimal' : 'numeric'}" data-qtd value="${esc(it.quantidade)}"></label>
+        <label class="rotulo-peq">Qtd. (${esc(unidadeQtd(it.produto))})${it.produto.pesavel && !emUnidade(it.produto) ? ' estimada' : ''}
+          <input class="input" type="text" inputmode="${aceitaFracao(it.produto) && !emUnidade(it.produto) ? 'decimal' : 'numeric'}" data-qtd value="${esc(it.quantidade)}"></label>
         <label class="rotulo-peq">Preço (R$/${esc(it.produto.unidade)})
           <input class="input" type="text" inputmode="decimal" data-preco value="${esc(it.precoTexto)}"></label>
         <div class="item-total">${moeda(totalItem(it))}</div>
@@ -150,7 +157,7 @@ async function formPedido(alvo, { pedido = null, local = null, aoSalvar }) {
     for (const it of estado.itens) {
       const q = numero(it.quantidade);
       if (!(q > 0)) return `Quantidade inválida em "${it.produto.descricao}"`;
-      if (!aceitaFracao(it.produto) && !Number.isInteger(q)) return `"${it.produto.descricao}" é vendido por ${it.produto.unidade}: use quantidade inteira`;
+      if ((emUnidade(it.produto) || !aceitaFracao(it.produto)) && !Number.isInteger(q)) return `"${it.produto.descricao}" é pedido em ${unidadeQtd(it.produto)}: use quantidade inteira`;
       if (!(precoItem(it) > 0)) return `Informe o preço de "${it.produto.descricao}"`;
     }
     return null;
@@ -166,6 +173,8 @@ async function formPedido(alvo, { pedido = null, local = null, aoSalvar }) {
       if (e.target.matches('[data-qtd]')) it.quantidade = e.target.value;
       if (e.target.matches('[data-preco]')) it.precoTexto = e.target.value;
       linha.querySelector('.item-total').textContent = moeda(totalItem(it));
+      const est = linha.querySelector('[data-estimado]');
+      if (est && it.produto.peso_medio_kg) est.textContent = `≈ ${fmtKg(pesoEstimado(it))} kg · cobrado pelo peso real`;
       linha.classList.toggle('linha-alerta', abaixo(it));
       atualizarTotal();
     }
@@ -203,7 +212,7 @@ async function formPedido(alvo, { pedido = null, local = null, aoSalvar }) {
       quantidade: numero(it.quantidade),
       preco_centavos: precoItem(it),
       // dados para exibir o pedido enquanto estiver só no aparelho
-      descricao: it.produto.descricao, codigo: it.produto.codigo, unidade: it.produto.unidade,
+      descricao: it.produto.descricao, codigo: it.produto.codigo, unidade: it.produto.unidade, unidade_pedido: it.produto.unidade_pedido,
       pesavel: it.produto.pesavel, preco_tabela_centavos: it.produto.preco_centavos,
     }));
     const c = estado.cliente;
@@ -246,7 +255,7 @@ async function formPedido(alvo, { pedido = null, local = null, aoSalvar }) {
     escolherCliente(estado.cliente);
     estado.itens = base.itens.map((i) => ({
       produto: estado.catalogo.find((p) => p.id === i.produto_id)
-        || { id: i.produto_id, descricao: i.descricao, codigo: i.codigo, unidade: i.unidade, pesavel: i.pesavel, preco_centavos: i.preco_tabela_centavos },
+        || { id: i.produto_id, descricao: i.descricao, codigo: i.codigo, unidade: i.unidade, pesavel: i.pesavel, unidade_pedido: i.unidade_pedido, preco_centavos: i.preco_tabela_centavos },
       quantidade: String(i.quantidade).replace('.', ','),
       precoTexto: centavosParaTexto(i.preco_centavos),
     }));

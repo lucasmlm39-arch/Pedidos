@@ -100,7 +100,8 @@ function rotasCadastros(db) {
       FROM clientes c LEFT JOIN grupos_clientes g ON g.id = c.grupo_id
       WHERE c.ativo = 1 ${vendedor ? 'AND (c.vendedor_id IS NULL OR c.vendedor_id = ?)' : ''}
       ORDER BY c.razao_social`).all(...(vendedor ? [req.usuario.id] : []));
-    const produtos = db.prepare('SELECT id, codigo, descricao, unidade, pesavel FROM produtos WHERE ativo = 1 ORDER BY descricao').all();
+    const produtos = db.prepare(`SELECT id, codigo, descricao, unidade, pesavel, unidade_pedido, peso_medio_kg, tara_kg
+      FROM produtos WHERE ativo = 1 ORDER BY descricao`).all();
     const tabelas = db.prepare('SELECT id, nome, padrao FROM tabelas_preco WHERE ativo = 1').all().map((t) => ({
       ...t,
       precos: db.prepare('SELECT produto_id, preco_centavos FROM tabela_preco_itens WHERE tabela_id = ?').all(t.id)
@@ -121,21 +122,31 @@ function rotasCadastros(db) {
     const where = req.usuario.papel === 'gestor' ? '' : 'WHERE ativo = 1';
     res.json(db.prepare(`SELECT * FROM produtos ${where} ORDER BY descricao`).all());
   });
+  const numOuNull = (v, nome) => {
+    if (v == null || String(v).trim() === '') return null;
+    const n = Number(String(v).replace(',', '.'));
+    if (!(n >= 0)) throw new ErroNegocio(`${nome} inválido`);
+    return n;
+  };
   const camposProduto = (b) => ({
     codigo: exigir(texto(b.codigo), 'código'),
     descricao: exigir(texto(b.descricao), 'descrição'),
     unidade: (texto(b.unidade) || 'UN').toUpperCase(),
     pesavel: bool(b.pesavel),
+    unidade_pedido: texto(b.unidade_pedido)?.toUpperCase() ?? null,
+    peso_medio_kg: numOuNull(b.peso_medio_kg, 'Peso médio'),
+    tara_kg: numOuNull(b.tara_kg, 'Tara'),
     ativo: b.ativo === undefined ? 1 : bool(b.ativo),
   });
   r.post('/produtos', gestor, (req, res) => {
-    const rr = db.prepare(`INSERT INTO produtos (codigo, descricao, unidade, pesavel, ativo)
-      VALUES (:codigo, :descricao, :unidade, :pesavel, :ativo)`).run(camposProduto(req.body));
+    const rr = db.prepare(`INSERT INTO produtos (codigo, descricao, unidade, pesavel, unidade_pedido, peso_medio_kg, tara_kg, ativo)
+      VALUES (:codigo, :descricao, :unidade, :pesavel, :unidade_pedido, :peso_medio_kg, :tara_kg, :ativo)`).run(camposProduto(req.body));
     res.status(201).json({ id: Number(rr.lastInsertRowid) });
   });
   r.put('/produtos/:id', gestor, (req, res) => {
     db.prepare(`UPDATE produtos SET codigo = :codigo, descricao = :descricao, unidade = :unidade,
-      pesavel = :pesavel, ativo = :ativo WHERE id = :id`).run({ ...camposProduto(req.body), id: Number(req.params.id) });
+      pesavel = :pesavel, unidade_pedido = :unidade_pedido, peso_medio_kg = :peso_medio_kg, tara_kg = :tara_kg,
+      ativo = :ativo WHERE id = :id`).run({ ...camposProduto(req.body), id: Number(req.params.id) });
     res.json({ ok: true });
   });
 

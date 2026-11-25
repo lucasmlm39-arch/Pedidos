@@ -15,7 +15,11 @@ function render(p) {
     <hr>
     <table>${p.itens.map((i) => `
       <tr><td colspan="2" class="desc">${esc(i.codigo)} ${esc(i.descricao)}</td></tr>
-      <tr><td>${i.peso_real != null ? `${q(i.peso_real)} kg (pesado)` : `${q(i.quantidade)} ${esc(i.unidade)}`} x ${moeda(i.preco_centavos)}</td>
+      ${i.unidade_pedido ? `<tr><td colspan="2">Pedido: ${q(i.quantidade)} ${esc(i.unidade_pedido)}</td></tr>` : ''}
+      ${i.peso_bruto != null && i.caixas ? `<tr><td colspan="2">Bruto ${q(i.peso_bruto)} kg - ${i.caixas} cx x ${q(i.tara_kg)} kg</td></tr>` : ''}
+      <tr><td>${i.peso_real === 0 ? 'EM FALTA' : i.peso_real != null
+        ? `${q(i.peso_real)} ${i.pesavel ? 'kg líq.' : esc(i.unidade)}`
+        : `${q(i.quantidade)} ${esc(i.unidade)}`} x ${moeda(i.preco_centavos)}</td>
           <td class="num">${moeda(i.total_centavos)}</td></tr>`).join('')}
     </table>
     <hr>

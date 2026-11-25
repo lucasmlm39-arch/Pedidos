@@ -28,6 +28,14 @@ Pedido impresso ──► Faturamento: exporta arquivo ──► importa no Visu
 - Item vendido **abaixo** do preço da tabela (ou produto sem preço) fica pendente de aprovação do gestor.
 - Os preços podem ser digitados um a um ou **colados de uma planilha** (`CÓDIGO;PREÇO`).
 
+## Hortifruti: venda por unidade/caixa cobrada por kg e desconto da caixa (tara)
+
+- **Produto pesável** = cobrado pelo peso real (preço por kg).
+- Se o cliente pede em **unidades ou caixas** (ex.: 10 abacaxis), o produto tem "vendedor pede em" = `UN`/`CX` e um **peso médio** (ex.: 1,8 kg). O vendedor digita 10 UN; o sistema mostra a estimativa (≈ 18 kg) e o valor estimado.
+- Na expedição, para cada pesável: **Caixas** (já vem preenchido quando o pedido é em caixas) e **Peso bruto** da balança. Dá para somar várias pesadas: `12,1+11,3`.
+- O sistema desconta **caixas × tara** (padrão 2 kg por caixa, ajustável por produto) e cobra o **peso líquido**. Ex.: bruto 23,4 kg − 2 cx × 2 kg = 19,4 kg × R$ 4,50.
+- O comprovante impresso e o arquivo do Visual Software trazem pedido, bruto, caixas, tara e líquido.
+
 ## Vendedor sem internet (offline)
 
 - Ao entrar com internet, o aparelho baixa **clientes, produtos e tabelas de preço** (e atualiza a cada 30 min).

@@ -121,3 +121,40 @@ test('importação de clientes e produtos do Visual Software', async () => {
   assert.equal(db.prepare("SELECT pesavel FROM produtos WHERE codigo = 'P101'").get().pesavel, 1);
   assert.equal((await api('carlos', 'POST', '/api/produtos/lote', { texto: 'x;y' })).status, 403);
 });
+
+test('abacaxi pedido em unidades, cobrado por kg, com desconto da caixa (tara)', async () => {
+  const abacaxi = idProduto('P011'); // UN, R$ 4,50/kg, peso médio 1,8 kg, tara 2 kg
+  // Unidade não pode ser fracionada.
+  assert.equal((await api('carlos', 'POST', '/api/pedidos', { cliente_id: idCliente('C003'), itens: [{ produto_id: abacaxi, quantidade: 2.5 }] })).status, 400);
+  const p = (await api('carlos', 'POST', '/api/pedidos', {
+    cliente_id: idCliente('C003'),
+    itens: [{ produto_id: abacaxi, quantidade: 10 }],
+  })).dados;
+  const item = p.itens[0];
+  assert.equal(item.unidade_pedido, 'UN');
+  assert.equal(item.peso_estimado_kg, 18);
+  assert.equal(p.total_centavos, 18 * 450); // estimativa: 10 x 1,8 kg x 4,50
+  await api('exp', 'POST', `/api/pedidos/${p.id}/aceitar`);
+  // Sem peso não conclui.
+  assert.equal((await api('exp', 'POST', `/api/pedidos/${p.id}/concluir`)).status, 400);
+  // Bruto 23,4 kg em 2 caixas de 2 kg -> líquido 19,4 kg.
+  const r = await api('exp', 'PUT', `/api/pedidos/${p.id}/itens/${item.id}/peso`, { peso_bruto: 23.4, caixas: 2 });
+  assert.equal(r.status, 200);
+  const it = r.dados.itens[0];
+  assert.equal(it.peso_bruto, 23.4);
+  assert.equal(it.caixas, 2);
+  assert.equal(it.tara_kg, 2);
+  assert.equal(it.peso_real, 19.4);
+  assert.equal(r.dados.total_centavos, Math.round(19.4 * 450));
+  // Tara maior que o peso é recusada.
+  assert.equal((await api('exp', 'PUT', `/api/pedidos/${p.id}/itens/${item.id}/peso`, { peso_bruto: 3, caixas: 2 })).status, 400);
+  // Peso líquido direto continua valendo (limpa bruto/caixas).
+  const direto = (await api('exp', 'PUT', `/api/pedidos/${p.id}/itens/${item.id}/peso`, { peso: 19 })).dados.itens[0];
+  assert.equal(direto.peso_real, 19);
+  assert.equal(direto.peso_bruto, null);
+  await api('exp', 'PUT', `/api/pedidos/${p.id}/itens/${item.id}/peso`, { peso_bruto: 23.4, caixas: 2 });
+  await api('exp', 'POST', `/api/pedidos/${p.id}/concluir`);
+  const csv = await (await api('fat', 'POST', '/api/exportacao', { ids: [p.id], codificacao: 'utf8' }, true)).text();
+  const linha = csv.split('\r\n').find((l) => l.startsWith(`${p.id};`));
+  assert.ok(linha.includes(';10,000;UN;23,400;2;4,000;19,400;4,50;87,30;'), linha);
+});

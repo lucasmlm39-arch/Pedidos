@@ -27,6 +27,10 @@ const COLUNAS_CSV = [
   ['PRODUTO_DESCRICAO', (p, i) => i.descricao],
   ['UNIDADE', (p, i) => i.unidade],
   ['QUANTIDADE_PEDIDA', (p, i) => decimal(i.quantidade, 3)],
+  ['UNIDADE_PEDIDA', (p, i) => i.unidade_pedido || i.unidade],
+  ['PESO_BRUTO', (p, i) => (i.peso_bruto != null ? decimal(i.peso_bruto, 3) : '')],
+  ['CAIXAS', (p, i) => i.caixas ?? ''],
+  ['TARA_TOTAL', (p, i) => (i.peso_bruto != null ? decimal((i.caixas || 0) * (i.tara_kg || 0), 3) : '')],
   ['QUANTIDADE_FINAL', (p, i) => decimal(quantidadeFinal(i), 3)],
   ['PRECO_UNITARIO', (p, i) => decimal(i.preco_centavos / 100, 2)],
   ['TOTAL_ITEM', (p, i) => decimal(i.total_centavos / 100, 2)],
@@ -63,6 +67,10 @@ function gerarJson(pedidos) {
       descricao: i.descricao,
       unidade: i.unidade,
       quantidade_pedida: i.quantidade,
+      unidade_pedida: i.unidade_pedido || i.unidade,
+      peso_bruto: i.peso_bruto,
+      caixas: i.caixas,
+      tara_kg_por_caixa: i.tara_kg,
       quantidade: quantidadeFinal(i),
       preco_unitario: i.preco_centavos / 100,
       total: i.total_centavos / 100,
@@ -151,22 +159,30 @@ function importarClientes(db, texto) {
   return { criados, atualizados, erros };
 }
 
-// Colunas: CODIGO;DESCRICAO;UNIDADE;PESAVEL(S/N)
+// Colunas: CODIGO;DESCRICAO;UNIDADE;PESAVEL(S/N);UNIDADE_PEDIDO;PESO_MEDIO_KG;TARA_KG (as 3 últimas opcionais)
 function importarProdutos(db, texto) {
   const erros = [];
   let criados = 0;
   let atualizados = 0;
   transacao(db, () => {
     lerLinhas(texto).forEach((c, n) => {
-      const [codigo, descricao, unidade, pesavel] = c;
+      const [codigo, descricao, unidade, pesavel, unPedido, pesoMedio, tara] = c;
       if (!codigo || !descricao) return erros.push(`Linha ${n + 1}: código e descrição são obrigatórios`);
-      const dados = { codigo, descricao, unidade: (unidade || 'UN').toUpperCase(), pesavel: simOuNao(pesavel) };
+      const num = (v) => (v == null || v === '' ? null : Number(String(v).replace(',', '.')));
+      const dados = {
+        codigo, descricao, unidade: (unidade || 'UN').toUpperCase(), pesavel: simOuNao(pesavel),
+        unidade_pedido: unPedido ? unPedido.toUpperCase() : null, peso_medio_kg: num(pesoMedio), tara_kg: num(tara),
+      };
+      if ([dados.peso_medio_kg, dados.tara_kg].some((v) => v != null && !(v >= 0))) return erros.push(`Linha ${n + 1}: peso médio/tara inválido`);
       const existe = db.prepare('SELECT id FROM produtos WHERE codigo = ?').get(codigo);
       if (existe) {
-        db.prepare('UPDATE produtos SET descricao = :descricao, unidade = :unidade, pesavel = :pesavel WHERE codigo = :codigo').run(dados);
+        db.prepare(`UPDATE produtos SET descricao = :descricao, unidade = :unidade, pesavel = :pesavel,
+          unidade_pedido = COALESCE(:unidade_pedido, unidade_pedido), peso_medio_kg = COALESCE(:peso_medio_kg, peso_medio_kg),
+          tara_kg = COALESCE(:tara_kg, tara_kg) WHERE codigo = :codigo`).run(dados);
         atualizados++;
       } else {
-        db.prepare('INSERT INTO produtos (codigo, descricao, unidade, pesavel) VALUES (:codigo, :descricao, :unidade, :pesavel)').run(dados);
+        db.prepare(`INSERT INTO produtos (codigo, descricao, unidade, pesavel, unidade_pedido, peso_medio_kg, tara_kg)
+          VALUES (:codigo, :descricao, :unidade, :pesavel, :unidade_pedido, :peso_medio_kg, :tara_kg)`).run(dados);
         criados++;
       }
     });

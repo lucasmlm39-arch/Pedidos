@@ -40,7 +40,7 @@ function rotasPedidos(db, ev) {
   });
 
   r.put('/:id/itens/:itemId/peso', exigirPapel('expedicao'), (req, res) => {
-    res.json(P.registrarPeso(db, ev, req.usuario, id(req), Number(req.params.itemId), req.body.peso));
+    res.json(P.registrarPeso(db, ev, req.usuario, id(req), Number(req.params.itemId), req.body));
   });
 
   r.post('/:id/concluir', exigirPapel('expedicao'), (req, res) => {

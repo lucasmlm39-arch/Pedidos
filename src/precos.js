@@ -20,7 +20,7 @@ WITH candidatos AS (
   SELECT *, ROW_NUMBER() OVER (PARTITION BY produto_id ORDER BY prioridade, preco_centavos) AS rn
   FROM candidatos
 )
-SELECT p.id, p.codigo, p.descricao, p.unidade, p.pesavel,
+SELECT p.id, p.codigo, p.descricao, p.unidade, p.pesavel, p.unidade_pedido, p.peso_medio_kg, p.tara_kg,
        r.preco_centavos, r.tabela_id, r.tabela_nome
 FROM produtos p
 LEFT JOIN ranqueados r ON r.produto_id = p.id AND r.rn = 1
