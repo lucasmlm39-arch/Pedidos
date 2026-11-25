@@ -1,0 +1,62 @@
+<title>Expedição Hortifruti</title>
+<meta name="demo-papel" content="expedicao">
+<meta name="theme-color" content="#1f4e3d">
+<link rel="stylesheet" href="css/app.css">
+<style>
+  /* Prévia: faixa de aviso e comprovante na tela. Usa os tokens do app. */
+  :root { color-scheme: light; }
+  body { background: var(--fundo); color: var(--texto); }
+  body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-area-inset-top, 0px); z-index: 20; background: var(--primaria); }
+  .previa {
+    padding-block: 8px;
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+    background: var(--alerta-fundo); color: var(--alerta); font-size: .85rem; border-bottom: 1px solid var(--borda);
+  }
+  .previa strong { color: var(--texto); }
+  main.expedicao-tablet { height: auto; min-height: calc(100vh - 110px); }
+  .cupom-previa {
+    max-width: 320px; margin: 12px auto 0; padding: 14px; background: #fff; color: #111;
+    border: 1px dashed var(--borda); font: 13px/1.4 "Courier New", ui-monospace, monospace;
+  }
+  .cupom-previa hr { border: 0; border-top: 1px dashed #111; margin: 6px 0; }
+  .cp-titulo { text-align: center; font-weight: 700; font-size: 16px; }
+  .cp-centro { text-align: center; }
+  .cp-desc { font-weight: 700; margin-top: 4px; }
+  .cp-linha { display: flex; justify-content: space-between; gap: 8px; }
+  .cp-total { font-weight: 700; font-size: 15px; }
+</style>
+
+<div class="previa" role="note">
+  <strong>Prévia da tela da expedição (feita para tablet).</strong>
+  Dados fictícios; nada é gravado de verdade. Um pedido novo chega sozinho em cerca de 25 segundos.
+</div>
+
+<div id="tela-login" class="tela-login" hidden>
+  <form id="form-login" class="cartao cartao-login">
+    <h1>Pedidos</h1>
+    <p class="dica">Na prévia: usuário <strong>expedicao</strong>, senha <strong>123456</strong></p>
+    <label class="rotulo">Usuário<input id="login" class="input" name="login" value="expedicao" autocomplete="username" autocapitalize="none" required></label>
+    <label class="rotulo">Senha<input id="senha" class="input" name="senha" type="password" value="123456" autocomplete="current-password" required></label>
+    <button class="btn btn-primario btn-grande" type="submit">Entrar</button>
+  </form>
+</div>
+
+<div id="app" hidden>
+  <header class="topo">
+    <div class="marca">Pedidos</div>
+    <nav id="menu" class="menu" aria-label="Menu"></nav>
+    <div class="topo-dir">
+      <button id="conexao" class="conexao" hidden></button>
+      <button id="ativar-notificacoes" class="btn btn-peq" hidden>Ativar notificações</button>
+      <span id="usuario" class="usuario"></span>
+      <button id="sair" class="btn btn-peq">Sair</button>
+    </div>
+  </header>
+  <main id="conteudo"></main>
+</div>
+
+<div id="toasts" class="toasts" aria-live="polite"></div>
+
+<script type="module" src="js/demo-api.js"></script>
+<script type="module" src="js/app.js"></script>

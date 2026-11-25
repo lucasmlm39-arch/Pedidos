@@ -3,7 +3,12 @@
 // Nada é gravado de verdade; recarregar a página recomeça a demonstração.
 import { catalogoLocal } from './offline.js';
 
+// Qual tela a prévia mostra: <meta name="demo-papel" content="vendedor|expedicao">
+const PAPEL = document.querySelector('meta[name="demo-papel"]')?.content || 'vendedor';
 const VENDEDOR = { id: 2, nome: 'Carlos Vendedor', login: 'carlos', papel: 'vendedor' };
+const OUTROS_VENDEDORES = [{ id: 3, nome: 'Ana Vendedora' }, VENDEDOR];
+const EXPEDICAO = { id: 4, nome: 'João Expedição', login: 'expedicao', papel: 'expedicao' };
+const USUARIO = PAPEL === 'expedicao' ? EXPEDICAO : VENDEDOR;
 const ROTULOS = {
   AGUARDANDO_APROVACAO: 'Aguardando aprovação de preço',
   REVISAO: 'Em revisão (vendedor)',
@@ -89,7 +94,7 @@ function completar(p) {
   return p;
 }
 
-function criar({ cliente_id, itens, observacao, uuid, lancado_em }, quando = new Date()) {
+function criar({ cliente_id, itens, observacao, uuid, lancado_em }, quando = new Date(), vendedor = VENDEDOR) {
   if (uuid) {
     const existente = [...pedidos.values()].find((p) => p.uuid === uuid);
     if (existente) return { ...existente, ja_existia: true };
@@ -100,10 +105,10 @@ function criar({ cliente_id, itens, observacao, uuid, lancado_em }, quando = new
   const p = {
     id: proximoId++, uuid, status, cliente_id: c.id, cliente_nome: c.razao_social, cliente_fantasia: c.nome_fantasia,
     cliente_codigo: c.codigo, cliente_documento: c.documento, cliente_cidade: c.cidade, cliente_uf: c.uf,
-    vendedor_id: VENDEDOR.id, vendedor_nome: VENDEDOR.nome, observacao: observacao || null, motivo_status: null,
+    vendedor_id: vendedor.id, vendedor_nome: vendedor.nome, observacao: observacao || null, motivo_status: null,
     criado_em: agoraSql(quando), lancado_em: lancado_em ? agoraSql(new Date(lancado_em)) : agoraSql(quando),
     impresso_em: null, nota_fiscal: null, exportado_em: null, itens: its,
-    historico: [{ criado_em: agoraSql(quando), descricao: 'Pedido lançado', usuario_nome: VENDEDOR.nome }],
+    historico: [{ criado_em: agoraSql(quando), descricao: 'Pedido lançado', usuario_nome: vendedor.nome }],
   };
   pedidos.set(p.id, completar(p));
   return p;
@@ -117,7 +122,7 @@ function mudar(p, status, descricao, quem, extras = {}) {
 }
 
 // Pedidos de exemplo, para "Meus pedidos" já mostrar cada situação.
-(function exemplos() {
+function exemplosVendedor() {
   const h = (horas) => new Date(Date.now() - horas * 3600e3);
   const a = criar({ cliente_id: 1, itens: [{ produto_id: 4, quantidade: 50 }, { produto_id: 2, quantidade: 120 }, { produto_id: 8, quantidade: 30 }] }, h(30));
   a.itens[0].peso_real = 52.4; a.itens[0].peso_bruto = 58.4; a.itens[0].caixas = 3; a.itens[0].tara_kg = 2;
@@ -134,7 +139,51 @@ function mudar(p, status, descricao, quem, extras = {}) {
   Object.assign(c, { status: 'REVISAO', motivo_status: 'Mínimo para esse cliente é R$ 94,00' });
   c.historico.push({ criado_em: agoraSql(h(0.5)), descricao: 'Preço reprovado: Mínimo para esse cliente é R$ 94,00', usuario_nome: 'Gestor' });
   completar(c);
-}());
+}
+
+// Pedidos de exemplo para a expedição: novos, um em separação e alguns concluídos.
+function exemplosExpedicao() {
+  const h = (horas) => new Date(Date.now() - horas * 3600e3);
+  const liberar = (p, horas) => {
+    p.historico.push({ criado_em: agoraSql(h(horas)), descricao: 'Preços aprovados pelo gestor', usuario_nome: 'Gestor' });
+    p.status = 'AGUARDANDO_EXPEDICAO';
+    p.itens.forEach((i) => { if (i.aprovacao === 'pendente') i.aprovacao = 'aprovado'; });
+    completar(p);
+  };
+  const [ana, carlos] = OUTROS_VENDEDORES;
+  // Já concluídos (aguardando faturamento)
+  const f1 = criar({ cliente_id: 2, itens: [{ produto_id: 3, quantidade: 6 }, { produto_id: 5, quantidade: 40 }] }, h(6), ana);
+  f1.itens[1].peso_real = 41.2; f1.itens[1].peso_bruto = 45.2; f1.itens[1].caixas = 2; f1.itens[1].tara_kg = 2;
+  Object.assign(f1, { status: 'AGUARDANDO_FATURAMENTO', impresso_em: agoraSql(h(5)) });
+  f1.historico.push({ criado_em: agoraSql(h(5)), descricao: 'Separação/pesagem concluída. Enviado ao faturamento', usuario_nome: EXPEDICAO.nome });
+  completar(f1);
+  // Em separação, já com um item pesado
+  const s1 = criar({ cliente_id: 6, observacao: 'Entregar até 10h na cozinha', itens: [
+    { produto_id: 11, quantidade: 12 }, { produto_id: 9, quantidade: 15 }, { produto_id: 7, quantidade: 20 }, { produto_id: 8, quantidade: 10 },
+  ] }, h(2.5), carlos);
+  s1.itens[1].peso_real = 15.8; s1.itens[1].peso_bruto = 17.8; s1.itens[1].caixas = 1; s1.itens[1].tara_kg = 2;
+  s1.status = 'EM_SEPARACAO';
+  s1.historico.push({ criado_em: agoraSql(h(1)), descricao: 'Pedido aceito pela expedição', usuario_nome: EXPEDICAO.nome });
+  completar(s1);
+  // Novos, aguardando a expedição aceitar
+  const n1 = criar({ cliente_id: 3, itens: [
+    { produto_id: 11, quantidade: 10 }, { produto_id: 12, quantidade: 3 }, { produto_id: 2, quantidade: 40 }, { produto_id: 10, quantidade: 15 },
+  ] }, h(0.8), carlos);
+  completar(n1);
+  const n2 = criar({ cliente_id: 1, observacao: 'Cliente pediu bananas mais verdes', itens: [
+    { produto_id: 4, quantidade: 60 }, { produto_id: 6, quantidade: 45 }, { produto_id: 3, quantidade: 8 }, { produto_id: 13, quantidade: 4 },
+  ] }, h(0.5), ana);
+  liberar(n2, 0.4);
+  const n3 = criar({ cliente_id: 7, itens: [{ produto_id: 14, quantidade: 24 }, { produto_id: 1, quantidade: 2 }, { produto_id: 8, quantidade: 6 }] }, h(0.2), carlos);
+  completar(n3);
+  // Daqui a pouco chega mais um, para ver o aviso em tempo real.
+  setTimeout(() => {
+    const novo = criar({ cliente_id: 4, itens: [{ produto_id: 12, quantidade: 2 }, { produto_id: 5, quantidade: 15 }, { produto_id: 7, quantidade: 30 }] }, new Date(), ana);
+    eventos.emitir({ id: novo.id, status: novo.status, rotulo: ROTULOS[novo.status] });
+  }, 25000);
+}
+
+if (PAPEL === 'expedicao') exemplosExpedicao(); else exemplosVendedor();
 
 // Simula o gestor aprovando e a expedição recebendo, para o vendedor ver os avisos chegarem.
 function simularAndamento(p) {
@@ -192,10 +241,10 @@ window.fetch = async (entrada, opcoes = {}) => {
   let m;
 
   if (rota === '/api/login' && metodo === 'POST') {
-    if (corpo.login?.toLowerCase() !== 'carlos') return resposta({ erro: 'Na prévia, entre como carlos / 123456' }, 401);
-    return resposta({ token: 'demo', usuario: VENDEDOR });
+    if (corpo.login?.toLowerCase() !== USUARIO.login) return resposta({ erro: `Na prévia, entre como ${USUARIO.login} / 123456` }, 401);
+    return resposta({ token: 'demo', usuario: USUARIO });
   }
-  if (rota === '/api/me') return resposta(VENDEDOR);
+  if (rota === '/api/me') return resposta(USUARIO);
   if (rota === '/api/logout') return resposta({ ok: true });
   if (rota === '/api/status') return resposta({ rotulos: ROTULOS });
   if (rota === '/api/vendedor/pacote') return resposta(pacote());
@@ -226,12 +275,96 @@ window.fetch = async (entrada, opcoes = {}) => {
     mudar(p, 'CANCELADO', corpo.motivo ? `Cancelado: ${corpo.motivo}` : 'Cancelado', VENDEDOR.nome, { motivo_status: corpo.motivo || null });
     return resposta(p);
   }
+  // ---- Expedição ----
+  if ((m = rota.match(/^\/api\/pedidos\/(\d+)\/(aceitar|recusar|concluir|impresso)$/))) {
+    const p = pedidos.get(Number(m[1]));
+    const acao = m[2];
+    if (acao === 'aceitar') {
+      if (p.status !== 'AGUARDANDO_EXPEDICAO') return resposta({ erro: 'Pedido não está aguardando a expedição' }, 409);
+      mudar(p, 'EM_SEPARACAO', 'Pedido aceito pela expedição', EXPEDICAO.nome);
+    }
+    if (acao === 'recusar') {
+      p.itens.forEach((i) => Object.assign(i, { peso_real: null, peso_bruto: null, caixas: null, tara_kg: null }));
+      mudar(p, 'REVISAO', `Recusado pela expedição: ${corpo.motivo}`, EXPEDICAO.nome, { motivo_status: corpo.motivo });
+    }
+    if (acao === 'concluir') {
+      const faltam = p.itens.filter((i) => i.pesavel && i.peso_real == null).map((i) => i.descricao);
+      if (faltam.length) return resposta({ erro: `Falta pesar: ${faltam.join(', ')}` }, 400);
+      mudar(p, 'AGUARDANDO_FATURAMENTO', 'Separação/pesagem concluída. Enviado ao faturamento', EXPEDICAO.nome);
+    }
+    if (acao === 'impresso') {
+      p.impresso_em = agoraSql();
+      p.historico.push({ criado_em: agoraSql(), descricao: 'Pedido impresso', usuario_nome: EXPEDICAO.nome });
+    }
+    return resposta(p);
+  }
+  if ((m = rota.match(/^\/api\/pedidos\/(\d+)\/itens\/(\d+)\/peso$/))) {
+    const p = pedidos.get(Number(m[1]));
+    const i = p.itens.find((x) => x.id === Number(m[2]));
+    if (p.status !== 'EM_SEPARACAO') return resposta({ erro: 'Aceite o pedido antes de pesar' }, 409);
+    const arred = (n) => Math.round(n * 1000) / 1000;
+    if (corpo.peso_bruto != null && corpo.peso_bruto !== '') {
+      const bruto = Number(corpo.peso_bruto);
+      const caixas = Number(corpo.caixas || 0);
+      const tara = Number(i.tara_produto_kg || 0);
+      if (!Number.isInteger(caixas) || caixas < 0) return resposta({ erro: 'Número de caixas inválido' }, 400);
+      const liquido = arred(bruto - caixas * tara);
+      if (!(liquido > 0)) return resposta({ erro: `Peso líquido ficou ${liquido} kg: confira o peso bruto e o número de caixas` }, 400);
+      Object.assign(i, { peso_real: liquido, peso_bruto: arred(bruto), caixas, tara_kg: tara });
+    } else if (corpo.peso === null || corpo.peso === '' || corpo.peso === undefined) {
+      Object.assign(i, { peso_real: null, peso_bruto: null, caixas: null, tara_kg: null });
+    } else {
+      const v = Number(corpo.peso);
+      const fracao = i.pesavel || i.unidade === 'KG';
+      if (!(v >= 0)) return resposta({ erro: 'Valor inválido' }, 400);
+      if (!fracao && !Number.isInteger(v)) return resposta({ erro: `Quantidade em ${i.unidade} deve ser inteira` }, 400);
+      Object.assign(i, { peso_real: arred(v), peso_bruto: null, caixas: null, tara_kg: null });
+    }
+    completar(p);
+    return resposta(p);
+  }
   return resposta({ erro: 'Não disponível na prévia' }, 404);
+};
+
+// ---------- Comprovante de impressão (na prévia aparece na própria tela) ----------
+function comprovante(p) {
+  const q = (n) => Number(n).toLocaleString('pt-BR', { maximumFractionDigits: 3 });
+  const m = (c) => (c / 100).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+  const e = (t) => String(t ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  const linhas = p.itens.map((i) => `
+    <div class="cp-desc">${e(i.codigo)} ${e(i.descricao)}</div>
+    ${i.unidade_pedido ? `<div>Pedido: ${q(i.quantidade)} ${e(i.unidade_pedido)}</div>` : ''}
+    ${i.peso_bruto != null && i.caixas ? `<div>Bruto ${q(i.peso_bruto)} kg - ${i.caixas} cx x ${q(i.tara_kg)} kg</div>` : ''}
+    <div class="cp-linha"><span>${i.peso_real === 0 ? 'EM FALTA' : i.peso_real != null ? `${q(i.peso_real)} ${i.pesavel ? 'kg líq.' : e(i.unidade)}` : `${q(i.quantidade)} ${e(i.unidade)}`} x ${m(i.preco_centavos)}</span><span>${m(i.total_centavos)}</span></div>`).join('');
+  return `<div class="cupom-previa" role="document" aria-label="Comprovante do pedido ${p.id}">
+    <div class="cp-titulo">PEDIDO #${p.id}</div>
+    <div class="cp-centro">${e(p.lancado_em.slice(8, 10))}/${e(p.lancado_em.slice(5, 7))} ${e(p.lancado_em.slice(11, 16))} · Vend.: ${e(p.vendedor_nome)}</div>
+    <hr><div><strong>${e(p.cliente_fantasia)}</strong></div><div>${e(p.cliente_nome)}</div><div>${e(p.cliente_documento)} · ${e(p.cliente_cidade)}/${e(p.cliente_uf)}</div>
+    <hr>${linhas}<hr>
+    <div class="cp-linha cp-total"><span>TOTAL</span><span>${m(p.total_centavos)}</span></div>
+    ${p.observacao ? `<hr><div><strong>OBS:</strong> ${e(p.observacao)}</div>` : ''}
+    <hr><div>Conferido: ____________________</div></div>`;
+}
+
+window.open = (url) => {
+  const id = Number(new URL(url, location.href).searchParams.get('id'));
+  const p = pedidos.get(id);
+  if (!p) return null;
+  p.impresso_em = agoraSql();
+  const fundo = document.createElement('div');
+  fundo.className = 'modal-fundo';
+  fundo.innerHTML = `<div class="modal"><button class="modal-fechar" aria-label="Fechar">×</button>
+    <h2>Comprovante que sai na impressora</h2>
+    <p class="dica">Na prévia o comprovante aparece aqui. No sistema, ele vai direto para a impressora térmica de 80 mm.</p>
+    ${comprovante(p)}</div>`;
+  fundo.addEventListener('click', (ev) => { if (ev.target === fundo || ev.target.closest('.modal-fechar')) fundo.remove(); });
+  document.body.append(fundo);
+  return { close() { fundo.remove(); } };
 };
 
 // Na prévia, as caixas de confirmação do navegador não aparecem: confirma direto.
 window.confirm = () => true;
-window.prompt = (_msg, padrao = '') => padrao || 'Cancelado na prévia';
+window.prompt = (_msg, padrao = '') => padrao || 'Motivo de teste (prévia)';
 
 // Entra direto como vendedor.
 try { localStorage.setItem('token', 'demo'); } catch { /* sem armazenamento: usa a tela de login */ }
