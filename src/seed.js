@@ -21,7 +21,7 @@ function popularDemonstracao(db) {
     usu.run('Marta Faturamento', 'faturamento', hashSenha('123456'), 'faturamento');
 
     const grp = db.prepare('INSERT OR IGNORE INTO grupos_clientes (nome) VALUES (?)');
-    ['Supermercados', 'Restaurantes', 'Mercearias'].forEach((g) => grp.run(g));
+    ['Supermercados', 'Restaurantes', 'Quitandas'].forEach((g) => grp.run(g));
     const g = (nome) => db.prepare('SELECT id FROM grupos_clientes WHERE nome = ?').get(nome).id;
 
     const cli = db.prepare(`INSERT OR IGNORE INTO clientes (codigo, razao_social, nome_fantasia, documento, cidade, uf, grupo_id)
@@ -29,19 +29,22 @@ function popularDemonstracao(db) {
     cli.run('C001', 'Supermercado Bom Preço Ltda', 'Bom Preço', '12.345.678/0001-90', 'Campinas', 'SP', g('Supermercados'));
     cli.run('C002', 'Mercado Central Eireli', 'Mercado Central', '23.456.789/0001-01', 'Jundiaí', 'SP', g('Supermercados'));
     cli.run('C003', 'Restaurante Sabor Caseiro ME', 'Sabor Caseiro', '34.567.890/0001-12', 'Campinas', 'SP', g('Restaurantes'));
-    cli.run('C004', 'Mercearia do Zé', 'Mercearia do Zé', '456.789.012-34', 'Valinhos', 'SP', g('Mercearias'));
-    cli.run('C005', 'Distribuidora Alfa S/A', 'Alfa', '45.678.901/0001-23', 'Sumaré', 'SP', null);
+    cli.run('C004', 'Quitanda do Zé', 'Quitanda do Zé', '456.789.012-34', 'Valinhos', 'SP', g('Quitandas'));
+    cli.run('C005', 'Sacolão Alfa S/A', 'Sacolão Alfa', '45.678.901/0001-23', 'Sumaré', 'SP', null);
 
     const prod = db.prepare('INSERT OR IGNORE INTO produtos (codigo, descricao, unidade, pesavel) VALUES (?, ?, ?, ?)');
     const produtos = [
-      ['P001', 'Arroz Tipo 1 5kg', 'FD', 0, 2890],
-      ['P002', 'Feijão Carioca 1kg', 'UN', 0, 789],
-      ['P003', 'Óleo de Soja 900ml', 'CX', 0, 13990],
-      ['P004', 'Queijo Mussarela (peça)', 'KG', 1, 3290],
-      ['P005', 'Presunto Cozido (peça)', 'KG', 1, 2790],
-      ['P006', 'Linguiça Toscana', 'KG', 1, 1990],
-      ['P007', 'Açúcar Cristal 5kg', 'FD', 0, 2190],
-      ['P008', 'Café Torrado 500g', 'UN', 0, 1890],
+      // código, descrição, unidade, pesável, preço tabela padrão (centavos)
+      ['P001', 'Tomate Italiano (caixa 18 kg)', 'CX', 0, 9890],
+      ['P002', 'Alface Crespa', 'UN', 0, 250],
+      ['P003', 'Banana Prata (caixa 20 kg)', 'CX', 0, 7990],
+      ['P004', 'Batata Lavada', 'KG', 1, 390],
+      ['P005', 'Cebola Nacional', 'KG', 1, 450],
+      ['P006', 'Laranja Pera', 'KG', 1, 320],
+      ['P007', 'Cheiro-Verde (maço)', 'MÇ', 0, 180],
+      ['P008', 'Ovos Brancos (dúzia)', 'DZ', 0, 1090],
+      ['P009', 'Mamão Formosa', 'KG', 1, 590],
+      ['P010', 'Couve Manteiga (maço)', 'MÇ', 0, 220],
     ];
     produtos.forEach(([c, d, u, p]) => prod.run(c, d, u, p));
     const pid = (codigo) => db.prepare('SELECT id FROM produtos WHERE codigo = ?').get(codigo).id;
@@ -49,20 +52,20 @@ function popularDemonstracao(db) {
     const tab = db.prepare('INSERT OR IGNORE INTO tabelas_preco (nome, padrao) VALUES (?, ?)');
     tab.run('Tabela Padrão', 1);
     tab.run('Supermercados (-5%)', 0);
-    tab.run('Especial Distribuidora Alfa', 0);
+    tab.run('Especial Sacolão Alfa', 0);
     const tid = (nome) => db.prepare('SELECT id FROM tabelas_preco WHERE nome = ?').get(nome).id;
     const item = db.prepare('INSERT OR REPLACE INTO tabela_preco_itens (tabela_id, produto_id, preco_centavos) VALUES (?, ?, ?)');
     for (const [c, , , , preco] of produtos) {
       item.run(tid('Tabela Padrão'), pid(c), preco);
       item.run(tid('Supermercados (-5%)'), pid(c), Math.round(preco * 0.95));
     }
-    item.run(tid('Especial Distribuidora Alfa'), pid('P001'), 2590);
-    item.run(tid('Especial Distribuidora Alfa'), pid('P003'), 12490);
+    item.run(tid('Especial Sacolão Alfa'), pid('P001'), 8990);
+    item.run(tid('Especial Sacolão Alfa'), pid('P003'), 6990);
 
     const vinc = db.prepare('INSERT OR IGNORE INTO tabela_preco_vinculos (tabela_id, cliente_id, grupo_id) VALUES (?, ?, ?)');
     vinc.run(tid('Supermercados (-5%)'), null, g('Supermercados'));
     const alfa = db.prepare("SELECT id FROM clientes WHERE codigo = 'C005'").get().id;
-    vinc.run(tid('Especial Distribuidora Alfa'), alfa, null);
+    vinc.run(tid('Especial Sacolão Alfa'), alfa, null);
   });
 }
 

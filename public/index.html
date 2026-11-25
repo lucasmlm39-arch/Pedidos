@@ -5,6 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#1f4e3d">
   <title>Pedidos</title>
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="/icones/icone.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/icones/icone-192.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
   <link rel="stylesheet" href="/css/app.css">
 </head>
 <body>
@@ -23,6 +27,7 @@
       <div class="marca">Pedidos</div>
       <nav id="menu" class="menu" aria-label="Menu"></nav>
       <div class="topo-dir">
+        <button id="conexao" class="conexao" hidden></button>
         <button id="ativar-notificacoes" class="btn btn-peq" hidden>Ativar notificações</button>
         <span id="usuario" class="usuario"></span>
         <button id="sair" class="btn btn-peq">Sair</button>

@@ -1,7 +1,9 @@
 // Inicialização: login, menu por perfil e notificações em tempo real.
 import { api, sessao, esc, toast, tentar } from './util.js';
 import { telaNovoPedido, telaMeusPedidos } from './vendedor.js';
-import { telaExpedicao, telaFaturamento, telaAprovacoes, telaTodosPedidos } from './operacao.js';
+import { telaFaturamento, telaAprovacoes, telaTodosPedidos } from './operacao.js';
+import { telaExpedicao } from './expedicao.js';
+import { sincronizar, baixarPacote, aoMudarEstado, estadoOffline, filaListar, semConexao } from './offline.js';
 import { telaClientes, telaGrupos, telaProdutos, telaTabelas, telaUsuarios } from './gestor.js';
 
 const TELAS = {
@@ -101,10 +103,48 @@ function conectarEventos() {
   });
 }
 
-async function entrar() {
+// ---------- Modo offline (vendedor) ----------
+function renderEstadoConexao(e) {
+  const el = document.getElementById('conexao');
+  const quando = e.dadosDe ? new Date(e.dadosDe).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : 'nunca';
+  el.hidden = false;
+  el.className = `conexao ${e.online ? 'conexao-on' : 'conexao-off'}`;
+  el.innerHTML = `<span class="ponto"></span>${e.online ? 'Online' : 'Offline'}${e.pendentes ? ` · <strong>${e.pendentes} a enviar</strong>` : ''}`;
+  el.title = `Dados de clientes e preços atualizados em ${quando}. Toque para sincronizar.`;
+}
+
+async function sincronizarTudo({ silencioso = false } = {}) {
+  try {
+    const r = await sincronizar();
+    if (r.enviados.length) toast(`${r.enviados.length} pedido(s) do aparelho enviado(s) ao servidor`);
+    if (r.erros) toast(`${r.erros} pedido(s) recusado(s): veja em "Meus pedidos"`, 'erro');
+    if (!r.semConexao) await baixarPacote();
+    else if (!silencioso) toast('Sem conexão com o servidor', 'erro');
+    if (r.enviados.length || r.erros) conteudoAtual().recarregar?.().catch(() => {});
+  } catch (e) {
+    if (!silencioso) toast(semConexao(e) ? 'Sem conexão com o servidor' : e.message, 'erro');
+  }
+}
+
+function iniciarOffline() {
+  aoMudarEstado(renderEstadoConexao);
+  estadoOffline().then(renderEstadoConexao);
+  document.getElementById('conexao').onclick = () => sincronizarTudo();
+  window.addEventListener('online', () => sincronizarTudo({ silencioso: true }));
+  setInterval(async () => {
+    if (navigator.onLine && (await filaListar()).length) sincronizarTudo({ silencioso: true });
+  }, 60000);
+  setInterval(() => navigator.onLine && baixarPacote().catch(() => {}), 30 * 60000); // preços atualizados
+  sincronizarTudo({ silencioso: true });
+}
+
+async function entrar({ offline = false } = {}) {
   document.getElementById('tela-login').hidden = true;
   document.getElementById('app').hidden = false;
+  try { localStorage.setItem('usuario', JSON.stringify(sessao.usuario)); } catch {}
   montarMenu();
+  if (sessao.usuario.papel === 'vendedor') iniciarOffline();
+  if (offline) return;
   atualizarBadges();
   conectarEventos();
   if ('Notification' in window && Notification.permission === 'default') {
@@ -126,18 +166,36 @@ document.getElementById('form-login').addEventListener('submit', async (e) => {
 });
 
 document.getElementById('sair').onclick = async () => {
+  if (sessao.usuario?.papel === 'vendedor') {
+    const pendentes = (await filaListar()).length;
+    if (pendentes && !confirm(`Há ${pendentes} pedido(s) no aparelho ainda não enviados. Eles só serão enviados quando você entrar de novo. Sair mesmo assim?`)) return;
+  }
   await api('POST', '/api/logout').catch(() => {});
   sessao.token = null;
+  try { localStorage.removeItem('usuario'); } catch {}
   location.hash = '';
   location.reload();
 };
+
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('/sw.js').catch(() => { /* exige HTTPS (ou localhost) */ });
+}
 
 (async () => {
   if (sessao.token) {
     try {
       sessao.usuario = await api('GET', '/api/me');
       return entrar();
-    } catch { sessao.token = null; }
+    } catch (e) {
+      // Sem conexão: entra com o usuário guardado no aparelho (modo offline).
+      let guardado = null;
+      try { guardado = JSON.parse(localStorage.getItem('usuario')); } catch {}
+      if (semConexao(e) && guardado) {
+        sessao.usuario = guardado;
+        return entrar({ offline: true });
+      }
+      sessao.token = null;
+    }
   }
   document.getElementById('tela-login').hidden = false;
 })();

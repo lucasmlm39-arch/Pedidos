@@ -82,6 +82,9 @@ CREATE TABLE IF NOT EXISTS pedidos (
   total_centavos   INTEGER NOT NULL DEFAULT 0,
   nota_fiscal      TEXT,
   impresso_em      TEXT,
+  exportado_em     TEXT,                   -- quando foi exportado para o Visual Software
+  uuid             TEXT,                   -- gerado no aparelho do vendedor (evita duplicar na sincronização offline)
+  lancado_em       TEXT,                   -- quando o vendedor fez o pedido (pode ser offline, antes de sincronizar)
   criado_em        TEXT NOT NULL DEFAULT (datetime('now')),
   atualizado_em    TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -92,7 +95,7 @@ CREATE TABLE IF NOT EXISTS pedido_itens (
   pedido_id               INTEGER NOT NULL REFERENCES pedidos(id) ON DELETE CASCADE,
   produto_id              INTEGER NOT NULL REFERENCES produtos(id),
   quantidade              REAL NOT NULL CHECK (quantidade > 0),
-  peso_real               REAL,
+  peso_real               REAL,           -- peso real (pesáveis) ou quantidade atendida pela expedição
   preco_centavos          INTEGER NOT NULL CHECK (preco_centavos > 0),
   preco_tabela_centavos   INTEGER,
   tabela_id               INTEGER REFERENCES tabelas_preco(id),
@@ -114,12 +117,28 @@ CREATE TABLE IF NOT EXISTS pedido_historico (
 );
 `;
 
+// Colunas adicionadas depois da primeira versão (bancos antigos recebem via ALTER TABLE).
+const MIGRACOES = [
+  ['pedidos', 'exportado_em', 'TEXT'],
+  ['pedidos', 'uuid', 'TEXT'],
+  ['pedidos', 'lancado_em', 'TEXT'],
+];
+
+function migrar(db) {
+  for (const [tabela, coluna, tipo] of MIGRACOES) {
+    const existe = db.prepare(`PRAGMA table_info(${tabela})`).all().some((c) => c.name === coluna);
+    if (!existe) db.exec(`ALTER TABLE ${tabela} ADD COLUMN ${coluna} ${tipo}`);
+  }
+  db.exec('CREATE UNIQUE INDEX IF NOT EXISTS ux_pedidos_uuid ON pedidos(uuid)');
+}
+
 function abrirBanco(arquivo) {
   if (arquivo !== ':memory:') fs.mkdirSync(path.dirname(arquivo), { recursive: true });
   const db = new DatabaseSync(arquivo);
   db.exec('PRAGMA foreign_keys = ON;');
   if (arquivo !== ':memory:') db.exec('PRAGMA journal_mode = WAL;');
   db.exec(SCHEMA);
+  migrar(db);
   return db;
 }
 

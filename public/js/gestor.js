@@ -18,6 +18,46 @@ function campoHtml(c, valor, opcoes) {
       ${c.obrigatorio ? 'required' : ''} ${c.dica ? `placeholder="${esc(c.dica)}"` : ''}></label>`;
 }
 
+// Importação de cadastros vindos do Visual Software (arquivo CSV/TXT ou texto colado).
+function abrirImportacao(cfg, aoTerminar) {
+  const { el, fechar } = modal(`
+    <h2>Importar ${esc(cfg.titulo.toLowerCase())}</h2>
+    <p class="dica">Use o relatório/exportação de ${esc(cfg.titulo.toLowerCase())} do Visual Software. Uma linha por registro,
+      colunas separadas por <code>;</code> ou TAB, nesta ordem:</p>
+    <p><code>${esc(cfg.importar.colunas)}</code></p>
+    <p class="dica">Registros com código já existente são atualizados; os novos são criados. A primeira linha pode ser o cabeçalho.</p>
+    <div class="form-linha">
+      <label class="rotulo">Arquivo<input class="input" type="file" accept=".csv,.txt,text/csv,text/plain" data-arquivo></label>
+      <label class="rotulo">Codificação<select class="input" data-cod>
+        <option value="windows-1252">Windows (padrão de sistemas antigos)</option><option value="utf-8">UTF-8</option></select></label>
+    </div>
+    <label class="rotulo">Ou cole aqui<textarea class="input" rows="8" data-texto placeholder="${esc(cfg.importar.exemplo)}"></textarea></label>
+    <div class="barra-acoes"><button class="btn btn-primario" data-importar>Importar</button></div>
+    <div data-resultado></div>`, { largo: true });
+  const lerArquivo = () => {
+    const arq = el.querySelector('[data-arquivo]').files[0];
+    if (!arq) return;
+    const leitor = new FileReader();
+    leitor.onload = () => { el.querySelector('[data-texto]').value = leitor.result; };
+    leitor.readAsText(arq, el.querySelector('[data-cod]').value);
+  };
+  el.querySelector('[data-arquivo]').onchange = lerArquivo;
+  el.querySelector('[data-cod]').onchange = lerArquivo;
+  el.querySelector('[data-importar]').onclick = async (e) => {
+    e.target.disabled = true;
+    try {
+      const r = await tentar(() => api('POST', cfg.importar.rota, { texto: el.querySelector('[data-texto]').value }));
+      el.querySelector('[data-resultado]').innerHTML = `<div class="aviso">
+        <strong>${r.criados} criado(s), ${r.atualizados} atualizado(s).</strong>
+        ${r.erros.length ? `<br><span class="txt-perigo">${r.erros.length} linha(s) com problema:</span><ul>${r.erros.slice(0, 20).map((x) => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}</div>`;
+      aoTerminar();
+      if (!r.erros.length) setTimeout(fechar, 1500);
+    } catch { /* exibido */ } finally {
+      e.target.disabled = false;
+    }
+  };
+}
+
 function telaCrud(cfg) {
   return async (alvo) => {
     let registros = [];
@@ -57,11 +97,13 @@ function telaCrud(cfg) {
     alvo.innerHTML = `<section class="cartao">
       <div class="cabecalho-secao"><h3>${esc(cfg.titulo)}</h3>
         <div class="grupo-botoes"><input type="search" class="input input-auto" data-busca placeholder="Filtrar…" aria-label="Filtrar">
+        ${cfg.importar ? '<button class="btn" data-importar-lote>Importar do Visual Software</button>' : ''}
         <button class="btn btn-primario" data-novo>+ Novo</button></div></div>
       ${cfg.dica ? `<p class="dica">${cfg.dica}</p>` : ''}
       <div data-lista></div></section>`;
     alvo.querySelector('[data-busca]').oninput = (e) => { busca = e.target.value.toLowerCase(); render(); };
     alvo.querySelector('[data-novo]').onclick = () => abrirForm(null);
+    if (cfg.importar) alvo.querySelector('[data-importar-lote]').onclick = () => abrirImportacao(cfg, carregar);
     alvo.querySelector('[data-lista]').onclick = (e) => {
       const tr = e.target.closest('[data-id]');
       if (tr) abrirForm(registros.find((r) => r.id === Number(tr.dataset.id)));
@@ -77,6 +119,11 @@ const opcoesVendedores = async () => (await api('GET', '/api/vendedores')).map((
 
 export const telaClientes = telaCrud({
   titulo: 'Clientes', nome: 'cliente', rota: '/api/clientes',
+  importar: {
+    rota: '/api/clientes/lote',
+    colunas: 'CODIGO;RAZAO_SOCIAL;NOME_FANTASIA;CNPJ_CPF;CIDADE;UF;TELEFONE;GRUPO',
+    exemplo: 'C001;Supermercado Bom Preço Ltda;Bom Preço;12.345.678/0001-90;Campinas;SP;(19) 3333-0000;Supermercados',
+  },
   dica: 'Se um vendedor for definido, só ele vê o cliente. Sem vendedor, todos os vendedores veem.',
   colunas: [
     { titulo: 'Código', valor: (r) => r.codigo },
@@ -109,6 +156,11 @@ export const telaGrupos = telaCrud({
 
 export const telaProdutos = telaCrud({
   titulo: 'Produtos', nome: 'produto', rota: '/api/produtos',
+  importar: {
+    rota: '/api/produtos/lote',
+    colunas: 'CODIGO;DESCRICAO;UNIDADE;PESAVEL (S/N)',
+    exemplo: 'P001;Tomate Italiano (caixa 18 kg);CX;N\nP004;Batata Lavada;KG;S',
+  },
   dica: 'Marque "pesável" para produtos vendidos por peso: a expedição informa o peso real e o valor é recalculado.',
   colunas: [
     { titulo: 'Código', valor: (r) => r.codigo },
@@ -120,7 +172,7 @@ export const telaProdutos = telaCrud({
   campos: [
     { nome: 'codigo', rotulo: 'Código', obrigatorio: true },
     { nome: 'descricao', rotulo: 'Descrição', obrigatorio: true },
-    { nome: 'unidade', rotulo: 'Unidade', dica: 'UN, CX, FD, KG…', padrao: 'UN' },
+    { nome: 'unidade', rotulo: 'Unidade', dica: 'KG, CX, UN, MÇ, DZ, BDJ…', padrao: 'UN' },
     { nome: 'pesavel', rotulo: 'Pesável (vendido por kg, pesado na expedição)', tipo: 'checkbox' },
     { nome: 'ativo', rotulo: 'Ativo', tipo: 'checkbox', padrao: 1 },
   ],

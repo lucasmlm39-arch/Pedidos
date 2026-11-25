@@ -4,6 +4,7 @@ const { exigirPapel, hashSenha } = require('../auth');
 const { transacao } = require('../db');
 const { catalogoDoCliente } = require('../precos');
 const { ErroNegocio } = require('../pedidos');
+const { importarClientes, importarProdutos } = require('../exportacao');
 
 const PAPEIS = ['vendedor', 'expedicao', 'gestor', 'faturamento'];
 
@@ -86,6 +87,30 @@ function rotasCadastros(db) {
       vendedor_id = :vendedor_id, ativo = :ativo WHERE id = :id`).run({ ...c, id: Number(req.params.id) });
     res.json({ ok: true });
   });
+  // Importação em lote (texto colado/arquivo exportado do Visual Software).
+  r.post('/clientes/lote', gestor, (req, res) => res.json(importarClientes(db, req.body.texto)));
+  r.post('/produtos/lote', gestor, (req, res) => res.json(importarProdutos(db, req.body.texto)));
+
+  // Pacote para o modo offline do vendedor: clientes, produtos e tabelas de preço.
+  // O aparelho calcula o preço de cada cliente com a mesma regra do servidor (cliente > grupo > padrão).
+  r.get('/vendedor/pacote', (req, res) => {
+    const vendedor = req.usuario.papel === 'vendedor';
+    const clientes = db.prepare(`
+      SELECT c.id, c.codigo, c.razao_social, c.nome_fantasia, c.documento, c.cidade, c.uf, c.grupo_id, g.nome AS grupo_nome
+      FROM clientes c LEFT JOIN grupos_clientes g ON g.id = c.grupo_id
+      WHERE c.ativo = 1 ${vendedor ? 'AND (c.vendedor_id IS NULL OR c.vendedor_id = ?)' : ''}
+      ORDER BY c.razao_social`).all(...(vendedor ? [req.usuario.id] : []));
+    const produtos = db.prepare('SELECT id, codigo, descricao, unidade, pesavel FROM produtos WHERE ativo = 1 ORDER BY descricao').all();
+    const tabelas = db.prepare('SELECT id, nome, padrao FROM tabelas_preco WHERE ativo = 1').all().map((t) => ({
+      ...t,
+      precos: db.prepare('SELECT produto_id, preco_centavos FROM tabela_preco_itens WHERE tabela_id = ?').all(t.id)
+        .map((i) => [i.produto_id, i.preco_centavos]),
+      clientes: db.prepare('SELECT cliente_id FROM tabela_preco_vinculos WHERE tabela_id = ? AND cliente_id IS NOT NULL').all(t.id).map((v) => v.cliente_id),
+      grupos: db.prepare('SELECT grupo_id FROM tabela_preco_vinculos WHERE tabela_id = ? AND grupo_id IS NOT NULL').all(t.id).map((v) => v.grupo_id),
+    }));
+    res.json({ gerado_em: new Date().toISOString(), usuario: req.usuario, clientes, produtos, tabelas });
+  });
+
   // Produtos com o preço de tabela que vale para este cliente.
   r.get('/clientes/:id/catalogo', (req, res) => {
     res.json(catalogoDoCliente(db, Number(req.params.id)));

@@ -1,4 +1,4 @@
-// Detalhe do pedido (modal) com as ações permitidas para o papel do usuário.
+// Detalhe do pedido com as ações permitidas para o papel do usuário (em janela modal ou painel da expedição).
 import { api, esc, moeda, qtd, dataHora, selo, modal, tentar, sessao, numero, toast } from './util.js';
 
 export function imprimirPedido(id) {
@@ -8,8 +8,29 @@ export function imprimirPedido(id) {
 
 const pode = (...papeis) => sessao.usuario.papel === 'gestor' || papeis.includes(sessao.usuario.papel);
 
+const fracionado = (i) => Boolean(i.pesavel) || String(i.unidade).toUpperCase() === 'KG';
+
+function campoSeparacao(i) {
+  const falta = i.peso_real === 0;
+  return `<div class="campo-separacao">
+    <input class="input-peso ${i.peso_real != null ? 'preenchido' : ''} ${i.pesavel && i.peso_real == null ? 'obrigatorio' : ''}"
+      type="text" inputmode="${fracionado(i) ? 'decimal' : 'numeric'}" data-peso="${i.id}"
+      value="${i.peso_real != null ? String(i.peso_real).replace('.', ',') : ''}"
+      placeholder="${i.pesavel ? 'pesar' : String(i.quantidade).replace('.', ',')}"
+      aria-label="${i.pesavel ? 'Peso em kg' : 'Quantidade atendida'} de ${esc(i.descricao)}">
+    <span class="un-peso">${i.pesavel ? 'kg' : esc(i.unidade)}</span>
+    <button class="btn btn-peq ${falta ? 'btn-perigo' : ''}" data-falta="${i.id}" title="Item em falta">Falta</button>
+  </div>`;
+}
+
+function valorSeparado(i) {
+  if (i.peso_real === 0) return '<span class="selo selo-perigo">Em falta</span>';
+  if (i.peso_real != null) return qtd(i.peso_real, i.pesavel ? 'kg' : i.unidade);
+  return i.pesavel ? '<small>a pesar</small>' : '—';
+}
+
 function linhaItem(p, i) {
-  const pesando = p.status === 'EM_SEPARACAO' && i.pesavel && pode('expedicao');
+  const separando = p.status === 'EM_SEPARACAO' && pode('expedicao');
   const abaixo = i.preco_tabela_centavos != null && i.preco_centavos < i.preco_tabela_centavos;
   const aprov = {
     pendente: '<span class="selo selo-alerta">Aguardando gestor</span>',
@@ -25,9 +46,7 @@ function linhaItem(p, i) {
   return `<tr class="${abaixo ? 'linha-alerta' : ''}">
     <td><strong>${esc(i.descricao)}</strong><br><small>${esc(i.codigo)}${i.pesavel ? ' · pesável' : ''}</small> ${aprov}${decidir}</td>
     <td class="num">${qtd(i.quantidade, i.unidade)}${i.pesavel ? '<br><small>(estimado)</small>' : ''}</td>
-    <td class="num">${pesando
-      ? `<input class="input-peso" type="text" inputmode="decimal" data-peso="${i.id}" value="${i.peso_real ?? ''}" placeholder="kg" aria-label="Peso de ${esc(i.descricao)}">`
-      : (i.peso_real != null ? qtd(i.peso_real, 'kg') : (i.pesavel ? '<small>a pesar</small>' : '—'))}</td>
+    <td class="num">${separando ? campoSeparacao(i) : valorSeparado(i)}</td>
     <td class="num">${moeda(i.preco_centavos)}${i.preco_tabela_centavos != null
       ? `<br><small class="${abaixo ? 'txt-alerta' : ''}">tabela ${moeda(i.preco_tabela_centavos)}</small>`
       : '<br><small class="txt-alerta">sem tabela</small>'}</td>
@@ -69,9 +88,10 @@ function render(p) {
     </dl>
     ${p.observacao ? `<div class="aviso"><strong>Obs.:</strong> ${esc(p.observacao)}</div>` : ''}
     <div class="tabela-rolagem"><table class="tabela">
-      <thead><tr><th>Produto</th><th class="num">Qtd.</th><th class="num">Peso real</th><th class="num">Preço</th><th class="num">Total</th></tr></thead>
+      <thead><tr><th>Produto</th><th class="num">Qtd.</th><th class="num">${p.status === 'EM_SEPARACAO' ? 'Peso / qtd. atendida' : 'Peso / atendido'}</th><th class="num">Preço</th><th class="num">Total</th></tr></thead>
       <tbody>${p.itens.map((i) => linhaItem(p, i)).join('')}</tbody>
     </table></div>
+    ${p.status === 'EM_SEPARACAO' && pode('expedicao') ? '<p class="dica">Pesáveis: informe o peso. Demais itens: deixe vazio se atendeu tudo, digite a quantidade se atendeu parcial, ou toque em <strong>Falta</strong>.</p>' : ''}
     <div class="barra-acoes">${acoes(p)}</div>
     <details class="historico"><summary>Histórico (${p.historico.length})</summary>
       <ol>${p.historico.map((h) => `<li><time>${dataHora(h.criado_em)}</time> ${esc(h.descricao || h.status_novo)} <small>— ${esc(h.usuario_nome || '')}</small></li>`).join('')}</ol>
@@ -80,6 +100,11 @@ function render(p) {
 
 export async function abrirPedido(id, aoMudar = () => {}) {
   const { el, fechar } = modal('<div class="carregando">Carregando…</div>', { largo: true });
+  await montarDetalhe(el, id, { aoMudar, fechar });
+}
+
+// Renderiza o pedido dentro de "el" e liga as ações. Retorna função para recarregar.
+export async function montarDetalhe(el, id, { aoMudar = () => {}, fechar = () => {} } = {}) {
   let pedido;
   const atualizar = async () => {
     pedido = await api('GET', `/api/pedidos/${id}`);
@@ -88,22 +113,39 @@ export async function abrirPedido(id, aoMudar = () => {}) {
   const feito = async (novo) => {
     pedido = novo;
     el.innerHTML = render(pedido);
-    aoMudar();
+    aoMudar(pedido);
   };
   await tentar(atualizar).catch(fechar);
 
   el.addEventListener('change', async (e) => {
     const campo = e.target.closest('[data-peso]');
-    if (!campo || !campo.value.trim()) return;
-    const peso = numero(campo.value);
-    await tentar(async () => feito(await api('PUT', `/api/pedidos/${id}/itens/${campo.dataset.peso}/peso`, { peso })), 'Peso registrado')
-      .catch(() => campo.focus());
+    if (!campo) return;
+    const peso = campo.value.trim() === '' ? null : numero(campo.value);
+    const campos = [...el.querySelectorAll('[data-peso]')];
+    const pos = campos.indexOf(campo);
+    try {
+      await tentar(async () => feito(await api('PUT', `/api/pedidos/${id}/itens/${campo.dataset.peso}/peso`, { peso })));
+      // Vai direto para o próximo item pesável ainda sem peso (agiliza no tablet).
+      const novos = [...el.querySelectorAll('[data-peso]')];
+      const proximo = novos.slice(pos + 1).find((c) => c.classList.contains('obrigatorio'));
+      proximo?.focus();
+    } catch {
+      el.querySelector(`[data-peso="${campo.dataset.peso}"]`)?.focus();
+    }
   });
 
   el.addEventListener('click', async (e) => {
+    const falta = e.target.closest('[data-falta]');
+    if (falta) {
+      const item = pedido.itens.find((i) => i.id === Number(falta.dataset.falta));
+      const valor = item.peso_real === 0 ? null : 0; // toque de novo desfaz
+      await tentar(async () => feito(await api('PUT', `/api/pedidos/${id}/itens/${item.id}/peso`, { peso: valor }))).catch(() => {});
+      return;
+    }
     const btn = e.target.closest('[data-acao]');
     if (!btn) return;
     const acao = btn.dataset.acao;
+    if (!acao) return;
     const post = (rota, corpo, msg) => tentar(async () => feito(await api('POST', `/api/pedidos/${id}/${rota}`, corpo)), msg);
     const pendentes = pedido.itens.filter((i) => i.aprovacao !== 'nao_necessaria');
     btn.disabled = true;
@@ -141,4 +183,5 @@ export async function abrirPedido(id, aoMudar = () => {}) {
       btn.disabled = false;
     }
   });
+  return atualizar;
 }

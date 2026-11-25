@@ -61,11 +61,11 @@ test('preço respeita prioridade: cliente > grupo > padrão', async () => {
   const grupo = (await api('carlos', 'GET', `/api/clientes/${idCliente('C001')}/catalogo`)).dados;
   const especial = (await api('carlos', 'GET', `/api/clientes/${idCliente('C005')}/catalogo`)).dados;
   const preco = (lista, codigo) => lista.find((p) => p.codigo === codigo);
-  assert.equal(preco(padrao, 'P001').preco_centavos, 2890);
+  assert.equal(preco(padrao, 'P001').preco_centavos, 9890);
   assert.equal(preco(padrao, 'P001').tabela_nome, 'Tabela Padrão');
-  assert.equal(preco(grupo, 'P001').preco_centavos, Math.round(2890 * 0.95));
-  assert.equal(preco(especial, 'P001').preco_centavos, 2590);              // tabela do cliente
-  assert.equal(preco(especial, 'P002').preco_centavos, 789);               // não está na especial -> padrão
+  assert.equal(preco(grupo, 'P001').preco_centavos, Math.round(9890 * 0.95));
+  assert.equal(preco(especial, 'P001').preco_centavos, 8990);              // tabela do cliente
+  assert.equal(preco(especial, 'P002').preco_centavos, 250);               // não está na especial -> padrão
 });
 
 test('pedido com preço de tabela vai direto para a expedição', async () => {
@@ -75,7 +75,7 @@ test('pedido com preço de tabela vai direto para a expedição', async () => {
   });
   assert.equal(r.status, 201);
   assert.equal(r.dados.status, 'AGUARDANDO_EXPEDICAO');
-  assert.equal(r.dados.total_centavos, 7890);
+  assert.equal(r.dados.total_centavos, 2500);
 });
 
 test('fluxo completo com preço abaixo da tabela, aprovação, pesagem e faturamento', async () => {
@@ -84,17 +84,17 @@ test('fluxo completo com preço abaixo da tabela, aprovação, pesagem e faturam
     cliente_id: idCliente('C003'),
     observacao: 'Entregar pela manhã',
     itens: [
-      { produto_id: idProduto('P001'), quantidade: 5, preco_centavos: 2500 }, // tabela 28,90
-      { produto_id: idProduto('P004'), quantidade: 3 },                       // queijo, kg, preço tabela
+      { produto_id: idProduto('P001'), quantidade: 5, preco_centavos: 9000 }, // tabela 98,90
+      { produto_id: idProduto('P004'), quantidade: 30 },                      // batata, kg, preço tabela
     ],
   });
   assert.equal(novo.status, 201);
   const pedido = novo.dados;
   assert.equal(pedido.status, 'AGUARDANDO_APROVACAO');
   const itemBaixo = pedido.itens.find((i) => i.codigo === 'P001');
-  const itemQueijo = pedido.itens.find((i) => i.codigo === 'P004');
+  const itemBatata = pedido.itens.find((i) => i.codigo === 'P004');
   assert.equal(itemBaixo.aprovacao, 'pendente');
-  assert.equal(itemQueijo.aprovacao, 'nao_necessaria');
+  assert.equal(itemBatata.aprovacao, 'nao_necessaria');
 
   // Expedição ainda não pode aceitar.
   assert.equal((await api('exp', 'POST', `/api/pedidos/${pedido.id}/aceitar`)).status, 409);
@@ -113,10 +113,12 @@ test('fluxo completo com preço abaixo da tabela, aprovação, pesagem e faturam
   const semPeso = await api('exp', 'POST', `/api/pedidos/${pedido.id}/concluir`);
   assert.equal(semPeso.status, 400);
   assert.match(semPeso.dados.erro, /Falta pesar/);
-  assert.equal((await api('exp', 'PUT', `/api/pedidos/${pedido.id}/itens/${itemBaixo.id}/peso`, { peso: 5 })).status, 400);
-  const pesado = await api('exp', 'PUT', `/api/pedidos/${pedido.id}/itens/${itemQueijo.id}/peso`, { peso: 3.125 });
+  assert.equal((await api('exp', 'PUT', `/api/pedidos/${pedido.id}/itens/${itemBaixo.id}/peso`, { peso: 4.5 })).status, 400); // caixa: inteiro
+  // Expedição atende só 4 das 5 caixas.
+  assert.equal((await api('exp', 'PUT', `/api/pedidos/${pedido.id}/itens/${itemBaixo.id}/peso`, { peso: 4 })).status, 200);
+  const pesado = await api('exp', 'PUT', `/api/pedidos/${pedido.id}/itens/${itemBatata.id}/peso`, { peso: 31.25 });
   assert.equal(pesado.status, 200);
-  assert.equal(pesado.dados.total_centavos, 5 * 2500 + Math.round(3.125 * 3290));
+  assert.equal(pesado.dados.total_centavos, 4 * 9000 + Math.round(31.25 * 390));
   const concl = await api('exp', 'POST', `/api/pedidos/${pedido.id}/concluir`);
   assert.equal(concl.dados.status, 'AGUARDANDO_FATURAMENTO');
 
@@ -137,7 +139,7 @@ test('fluxo completo com preço abaixo da tabela, aprovação, pesagem e faturam
 test('preço reprovado volta para o vendedor revisar', async () => {
   const novo = (await api('carlos', 'POST', '/api/pedidos', {
     cliente_id: idCliente('C004'),
-    itens: [{ produto_id: idProduto('P008'), quantidade: 2, preco_centavos: 1000 }],
+    itens: [{ produto_id: idProduto('P008'), quantidade: 2, preco_centavos: 900 }],
   })).dados;
   const rep = await api('gestor', 'POST', `/api/pedidos/${novo.id}/aprovacao`, {
     decisoes: [{ item_id: novo.itens[0].id, aprovado: false, motivo: 'Margem muito baixa' }],
@@ -167,14 +169,14 @@ test('validações do pedido', async () => {
 test('gestor cadastra tabela por grupo e importa preços em lote', async () => {
   const t = await api('gestor', 'POST', '/api/tabelas', { nome: 'Restaurantes Promo' });
   assert.equal(t.status, 201);
-  const lote = await api('gestor', 'POST', `/api/tabelas/${t.dados.id}/itens/lote`, { texto: 'P002;6,50\nP999;1,00\nP008\t17,00' });
+  const lote = await api('gestor', 'POST', `/api/tabelas/${t.dados.id}/itens/lote`, { texto: 'P002;2,10\nP999;1,00\nP008\t10,00' });
   assert.equal(lote.dados.importados, 2);
   assert.equal(lote.dados.erros.length, 1);
   const grupoRest = db.prepare("SELECT id FROM grupos_clientes WHERE nome = 'Restaurantes'").get().id;
   await api('gestor', 'PUT', `/api/tabelas/${t.dados.id}/vinculos`, { grupos: [grupoRest] });
   const cat = (await api('carlos', 'GET', `/api/clientes/${idCliente('C003')}/catalogo`)).dados;
-  assert.equal(cat.find((p) => p.codigo === 'P002').preco_centavos, 650);
-  assert.equal(cat.find((p) => p.codigo === 'P001').preco_centavos, 2890); // não está na promo -> padrão
+  assert.equal(cat.find((p) => p.codigo === 'P002').preco_centavos, 210);
+  assert.equal(cat.find((p) => p.codigo === 'P001').preco_centavos, 9890); // não está na promo -> padrão
   // Vendedor não acessa cadastros de preço.
   assert.equal((await api('carlos', 'GET', '/api/tabelas')).status, 403);
 });

@@ -31,6 +31,9 @@ class ErroNegocio extends Error {
 
 const agora = () => new Date().toISOString().replace('T', ' ').slice(0, 19);
 
+// Produtos pesáveis ou vendidos em KG aceitam quantidade fracionada (ex.: 2,5 kg).
+const aceitaFracao = (p) => Boolean(p.pesavel) || String(p.unidade).toUpperCase() === 'KG';
+
 function quantidadeFinal(item) {
   return item.peso_real ?? item.quantidade;
 }
@@ -76,7 +79,7 @@ function montarItens(db, clienteId, itens) {
     vistos.add(produtoId);
     const quantidade = Number(i.quantidade);
     if (!(quantidade > 0)) throw new ErroNegocio(`Quantidade inválida para "${produto.descricao}"`);
-    if (!produto.pesavel && !Number.isInteger(quantidade)) {
+    if (!aceitaFracao(produto) && !Number.isInteger(quantidade)) {
       throw new ErroNegocio(`"${produto.descricao}" é vendido por ${produto.unidade}: use quantidade inteira`);
     }
     const tabela = produto.preco_centavos ?? null;
@@ -127,19 +130,39 @@ function avisarPorStatus(ev, pedido) {
 
 // ---------- Ações ----------
 
+const UUID_OK = /^[0-9a-zA-Z-]{8,64}$/;
+
+function dataLancamento(v) {
+  if (!v) return agora();
+  const d = new Date(v);
+  if (Number.isNaN(d.getTime()) || d.getTime() > Date.now() + 5 * 60000) return agora();
+  return d.toISOString().replace('T', ' ').slice(0, 19);
+}
+
 function criarPedido(db, ev, usuario, dados) {
+  // Pedido vindo do modo offline pode ser reenviado: o uuid garante que não duplica.
+  if (dados.uuid != null && !UUID_OK.test(String(dados.uuid))) throw new ErroNegocio('Identificador do pedido inválido');
+  if (dados.uuid) {
+    const existente = db.prepare('SELECT id, vendedor_id FROM pedidos WHERE uuid = ?').get(String(dados.uuid));
+    if (existente) {
+      if (existente.vendedor_id !== usuario.id) throw new ErroNegocio('Identificador do pedido já utilizado', 409);
+      return { ...obterPedido(db, existente.id), ja_existia: true };
+    }
+  }
   const id = transacao(db, () => {
     const clienteId = validarCliente(db, dados.cliente_id);
     const itens = montarItens(db, clienteId, dados.itens);
     const status = itens.some((i) => i.aprovacao === 'pendente')
       ? STATUS.AGUARDANDO_APROVACAO
       : STATUS.AGUARDANDO_EXPEDICAO;
-    const r = db.prepare(`INSERT INTO pedidos (cliente_id, vendedor_id, status, observacao, total_centavos)
-                          VALUES (?, ?, ?, ?, ?)`)
-      .run(clienteId, usuario.id, status, dados.observacao || null, calcularTotal(itens));
+    const r = db.prepare(`INSERT INTO pedidos (cliente_id, vendedor_id, status, observacao, total_centavos, uuid, lancado_em)
+                          VALUES (?, ?, ?, ?, ?, ?, ?)`)
+      .run(clienteId, usuario.id, status, dados.observacao || null, calcularTotal(itens),
+        dados.uuid ? String(dados.uuid) : null, dataLancamento(dados.lancado_em));
     const pid = Number(r.lastInsertRowid);
     gravarItens(db, pid, itens);
-    registrarHistorico(db, pid, usuario.id, null, status, 'Pedido lançado');
+    registrarHistorico(db, pid, usuario.id, null, status,
+      dados.uuid && dados.lancado_em ? `Pedido lançado (feito no aparelho em ${dataLancamento(dados.lancado_em)} UTC)` : 'Pedido lançado');
     return pid;
   });
   const pedido = obterPedido(db, id);
@@ -216,17 +239,20 @@ function recusarExpedicao(db, ev, usuario, id, motivo) {
   return pedido;
 }
 
+// Expedição informa o peso real (pesáveis) ou a quantidade atendida (demais). 0 = item em falta.
+// valor null/'' limpa o registro (volta a valer a quantidade pedida).
 function registrarPeso(db, ev, usuario, id, itemId, peso) {
+  const limpar = peso === null || peso === '';
   const valor = Number(peso);
-  if (!(valor > 0)) throw new ErroNegocio('Peso inválido');
+  if (!limpar && !(valor >= 0)) throw new ErroNegocio('Valor inválido');
   transacao(db, () => {
     const p = buscarPedidoBruto(db, id);
     exigirStatus(p, STATUS.EM_SEPARACAO);
-    const item = db.prepare(`SELECT i.id, pr.pesavel FROM pedido_itens i JOIN produtos pr ON pr.id = i.produto_id
+    const item = db.prepare(`SELECT i.id, pr.pesavel, pr.unidade FROM pedido_itens i JOIN produtos pr ON pr.id = i.produto_id
                              WHERE i.id = ? AND i.pedido_id = ?`).get(Number(itemId), p.id);
     if (!item) throw new ErroNegocio('Item não encontrado', 404);
-    if (!item.pesavel) throw new ErroNegocio('Este produto não é pesável');
-    db.prepare('UPDATE pedido_itens SET peso_real = ? WHERE id = ?').run(Math.round(valor * 1000) / 1000, item.id);
+    if (!limpar && !aceitaFracao(item) && !Number.isInteger(valor)) throw new ErroNegocio(`Quantidade em ${item.unidade} deve ser inteira`);
+    db.prepare('UPDATE pedido_itens SET peso_real = ? WHERE id = ?').run(limpar ? null : Math.round(valor * 1000) / 1000, item.id);
     const itens = db.prepare('SELECT quantidade, peso_real, preco_centavos FROM pedido_itens WHERE pedido_id = ?').all(p.id);
     db.prepare('UPDATE pedidos SET total_centavos = ?, atualizado_em = ? WHERE id = ?').run(calcularTotal(itens), agora(), p.id);
   });
@@ -322,9 +348,10 @@ function listarPedidos(db, usuario, filtros = {}) {
     if (lista.length) cond.push(`p.status IN (${lista.map((s) => `'${s}'`).join(',')})`);
   }
   if (filtros.nao_impressos) cond.push('p.impresso_em IS NULL');
+  if (filtros.nao_exportados) cond.push('p.exportado_em IS NULL');
   const where = cond.length ? `WHERE ${cond.join(' AND ')}` : '';
   return db.prepare(`
-    SELECT p.id, p.status, p.total_centavos, p.criado_em, p.atualizado_em, p.impresso_em, p.motivo_status,
+    SELECT p.id, p.uuid, p.status, p.total_centavos, p.criado_em, p.lancado_em, p.atualizado_em, p.impresso_em, p.exportado_em, p.motivo_status,
            c.razao_social AS cliente_nome, c.nome_fantasia AS cliente_fantasia, u.nome AS vendedor_nome,
            (SELECT COUNT(*) FROM pedido_itens i WHERE i.pedido_id = p.id) AS qtd_itens,
            (SELECT COUNT(*) FROM pedido_itens i WHERE i.pedido_id = p.id AND i.aprovacao = 'pendente') AS itens_pendentes
@@ -334,7 +361,7 @@ function listarPedidos(db, usuario, filtros = {}) {
 }
 
 module.exports = {
-  STATUS, ROTULOS, ErroNegocio,
+  STATUS, ROTULOS, ErroNegocio, aceitaFracao, quantidadeFinal,
   criarPedido, revisarPedido, decidirPrecos, aceitarExpedicao, recusarExpedicao,
   registrarPeso, concluirSeparacao, marcarImpresso, faturar, cancelar,
   obterPedido, listarPedidos,
