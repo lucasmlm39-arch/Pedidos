@@ -162,6 +162,8 @@ function exemplosExpedicao() {
     { produto_id: 11, quantidade: 12 }, { produto_id: 9, quantidade: 15 }, { produto_id: 7, quantidade: 20 }, { produto_id: 8, quantidade: 10 },
   ] }, h(2.5), carlos);
   s1.itens[1].peso_real = 15.8; s1.itens[1].peso_bruto = 17.8; s1.itens[1].caixas = 1; s1.itens[1].tara_kg = 2;
+  s1.itens[1].separado_em = agoraSql(h(0.8));
+  s1.itens[2].separado_em = agoraSql(h(0.7));
   s1.status = 'EM_SEPARACAO';
   s1.historico.push({ criado_em: agoraSql(h(1)), descricao: 'Pedido aceito pela expedição', usuario_nome: EXPEDICAO.nome });
   completar(s1);
@@ -227,6 +229,7 @@ const resumo = (p) => ({
   lancado_em: p.lancado_em, cliente_nome: p.cliente_nome, cliente_fantasia: p.cliente_fantasia, vendedor_nome: p.vendedor_nome,
   qtd_itens: p.itens.length, itens_pendentes: p.itens.filter((i) => i.aprovacao === 'pendente').length,
   motivo_status: p.motivo_status, exportado_em: null, impresso_em: p.impresso_em,
+  itens_separados: p.itens.filter((i) => i.separado_em).length,
 });
 
 const fetchOriginal = window.fetch.bind(window);
@@ -284,12 +287,14 @@ window.fetch = async (entrada, opcoes = {}) => {
       mudar(p, 'EM_SEPARACAO', 'Pedido aceito pela expedição', EXPEDICAO.nome);
     }
     if (acao === 'recusar') {
-      p.itens.forEach((i) => Object.assign(i, { peso_real: null, peso_bruto: null, caixas: null, tara_kg: null }));
+      p.itens.forEach((i) => Object.assign(i, { peso_real: null, peso_bruto: null, caixas: null, tara_kg: null, separado_em: null }));
       mudar(p, 'REVISAO', `Recusado pela expedição: ${corpo.motivo}`, EXPEDICAO.nome, { motivo_status: corpo.motivo });
     }
     if (acao === 'concluir') {
       const faltam = p.itens.filter((i) => i.pesavel && i.peso_real == null).map((i) => i.descricao);
       if (faltam.length) return resposta({ erro: `Falta pesar: ${faltam.join(', ')}` }, 400);
+      const semOk = p.itens.filter((i) => !i.separado_em).map((i) => i.descricao);
+      if (semOk.length) return resposta({ erro: `Falta dar OK em: ${semOk.join(', ')}` }, 400);
       mudar(p, 'AGUARDANDO_FATURAMENTO', 'Separação/pesagem concluída. Enviado ao faturamento', EXPEDICAO.nome);
     }
     if (acao === 'impresso') {
@@ -302,6 +307,7 @@ window.fetch = async (entrada, opcoes = {}) => {
     const p = pedidos.get(Number(m[1]));
     const i = p.itens.find((x) => x.id === Number(m[2]));
     if (p.status !== 'EM_SEPARACAO') return resposta({ erro: 'Aceite o pedido antes de pesar' }, 409);
+    if (i.separado_em && i.peso_real !== 0) return resposta({ erro: 'Item já conferido (OK). Toque em "Desfazer" para alterar.' }, 409);
     const arred = (n) => Math.round(n * 1000) / 1000;
     if (corpo.peso_bruto != null && corpo.peso_bruto !== '') {
       const bruto = Number(corpo.peso_bruto);
@@ -320,7 +326,16 @@ window.fetch = async (entrada, opcoes = {}) => {
       if (!fracao && !Number.isInteger(v)) return resposta({ erro: `Quantidade em ${i.unidade} deve ser inteira` }, 400);
       Object.assign(i, { peso_real: arred(v), peso_bruto: null, caixas: null, tara_kg: null });
     }
+    i.separado_em = i.peso_real === 0 ? agoraSql() : null; // falta já conta como resolvido
     completar(p);
+    return resposta(p);
+  }
+  if ((m = rota.match(/^\/api\/pedidos\/(\d+)\/itens\/(\d+)\/separado$/))) {
+    const p = pedidos.get(Number(m[1]));
+    const i = p.itens.find((x) => x.id === Number(m[2]));
+    if (p.status !== 'EM_SEPARACAO') return resposta({ erro: 'Aceite o pedido antes de separar' }, 409);
+    if (corpo.separado !== false && i.pesavel && i.peso_real == null) return resposta({ erro: `Pese "${i.descricao}" antes de dar OK` }, 400);
+    i.separado_em = corpo.separado === false ? null : agoraSql();
     return resposta(p);
   }
   return resposta({ erro: 'Não disponível na prévia' }, 404);

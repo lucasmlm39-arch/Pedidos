@@ -72,8 +72,21 @@ function colunaQtd(i) {
   return `${qtd(i.quantidade, i.unidade)}${i.pesavel ? '<br><small>(estimado)</small>' : ''}`;
 }
 
+// Item já conferido (OK): mostra o resultado travado e o botão para desfazer.
+function itemConferido(i) {
+  const falta = i.peso_real === 0;
+  return `<div class="conferido">
+    <div class="conferido-valor">${i.peso_real == null ? qtd(i.quantidade, i.unidade) : valorSeparado(i)}</div>
+    <span class="selo ${falta ? 'selo-perigo' : 'selo-ok'} selo-ok-grande">${falta ? 'Falta' : '✓ OK'}</span>
+    <button class="btn btn-peq" ${falta ? `data-falta="${i.id}"` : `data-desfazer="${i.id}"`}>Desfazer</button>
+  </div>`;
+}
+
+const botaoOk = (i) => `<button class="btn btn-ok btn-ok-item" data-ok="${i.id}" aria-label="OK: ${esc(i.descricao)} separado">OK</button>`;
+
 function linhaItem(p, i) {
   const separando = p.status === 'EM_SEPARACAO' && pode('expedicao');
+  const conferido = Boolean(i.separado_em);
   const abaixo = i.preco_tabela_centavos != null && i.preco_centavos < i.preco_tabela_centavos;
   const aprov = {
     pendente: '<span class="selo selo-alerta">Aguardando gestor</span>',
@@ -86,15 +99,29 @@ function linhaItem(p, i) {
          <button class="btn btn-ok btn-peq" data-acao="aprovar-item" data-item="${i.id}">Aprovar</button>
          <button class="btn btn-perigo btn-peq" data-acao="reprovar-item" data-item="${i.id}">Reprovar</button>
        </div>` : '';
-  return `<tr class="${abaixo ? 'linha-alerta' : ''}">
+  const classe = separando && conferido ? 'item-ok' : (abaixo ? 'linha-alerta' : '');
+  const separacao = !separando ? valorSeparado(i)
+    : conferido ? itemConferido(i)
+      : `<div class="separar">${campoSeparacao(i)}${botaoOk(i)}</div>`;
+  return `<tr class="${classe}" data-linha-item="${i.id}">
     <td><strong>${esc(i.descricao)}</strong><br><small>${esc(i.codigo)}${i.pesavel ? ' · pesável' : ''}</small> ${aprov}${decidir}</td>
     <td class="num">${colunaQtd(i)}</td>
-    <td class="num">${separando ? campoSeparacao(i) : valorSeparado(i)}</td>
+    <td class="num">${separacao}</td>
     <td class="num">${moeda(i.preco_centavos)}${i.pesavel ? '<small>/kg</small>' : ''}${i.preco_tabela_centavos != null
       ? `<br><small class="${abaixo ? 'txt-alerta' : ''}">tabela ${moeda(i.preco_tabela_centavos)}</small>`
       : '<br><small class="txt-alerta">sem tabela</small>'}</td>
     <td class="num">${moeda(i.total_centavos)}</td>
   </tr>`;
+}
+
+function progresso(p) {
+  if (p.status !== 'EM_SEPARACAO') return '';
+  const total = p.itens.length;
+  const ok = p.itens.filter((i) => i.separado_em).length;
+  return `<div class="progresso-separacao" role="progressbar" aria-valuemin="0" aria-valuemax="${total}" aria-valuenow="${ok}" aria-label="Itens separados">
+    <div class="ps-texto"><strong>${ok} de ${total}</strong> itens separados</div>
+    <div class="ps-barra"><span style="width:${total ? Math.round((ok / total) * 100) : 0}%"></span></div>
+  </div>`;
 }
 
 function acoes(p) {
@@ -103,7 +130,10 @@ function acoes(p) {
   const dono = sessao.usuario.id === p.vendedor_id;
   if (s === 'AGUARDANDO_APROVACAO' && pode()) b.push('<button class="btn btn-ok" data-acao="aprovar-todos">Aprovar todos os preços</button>');
   if (s === 'AGUARDANDO_EXPEDICAO' && pode('expedicao')) b.push('<button class="btn btn-primario" data-acao="aceitar">Aceitar pedido</button>');
-  if (s === 'EM_SEPARACAO' && pode('expedicao')) b.push('<button class="btn btn-primario" data-acao="concluir">Concluir pesagem e imprimir</button>');
+  if (s === 'EM_SEPARACAO' && pode('expedicao')) {
+    const faltam = p.itens.filter((i) => !i.separado_em).length;
+    b.push(`<button class="btn btn-primario" data-acao="concluir" ${faltam ? 'aria-disabled="true"' : ''}>${faltam ? `Concluir (faltam ${faltam})` : 'Concluir e imprimir'}</button>`);
+  }
   if (['AGUARDANDO_EXPEDICAO', 'EM_SEPARACAO'].includes(s) && pode('expedicao')) b.push('<button class="btn" data-acao="recusar">Devolver ao vendedor</button>');
   if (['AGUARDANDO_FATURAMENTO', 'FATURADO'].includes(s) && pode('expedicao', 'faturamento')) b.push('<button class="btn" data-acao="imprimir">Imprimir</button>');
   if (s === 'AGUARDANDO_FATURAMENTO' && pode('faturamento')) b.push('<button class="btn btn-primario" data-acao="faturar">Marcar como faturado</button>');
@@ -122,6 +152,7 @@ function render(p) {
       <div class="total-grande">${moeda(p.total_centavos)}</div>
     </div>
     ${p.motivo_status && ['REVISAO', 'CANCELADO'].includes(p.status) ? `<div class="aviso aviso-perigo">${esc(p.motivo_status)}</div>` : ''}
+    ${progresso(p)}
     <dl class="dados">
       <div><dt>Cliente</dt><dd>${esc(p.cliente_fantasia || p.cliente_nome)}<br><small>${esc(p.cliente_nome)} · ${esc(p.cliente_documento || '')}</small></dd></div>
       <div><dt>Vendedor</dt><dd>${esc(p.vendedor_nome)}</dd></div>
@@ -134,7 +165,7 @@ function render(p) {
       <thead><tr><th>Produto</th><th class="num">Qtd.</th><th class="num">${p.status === 'EM_SEPARACAO' ? 'Peso / qtd. atendida' : 'Peso / atendido'}</th><th class="num">Preço</th><th class="num">Total</th></tr></thead>
       <tbody>${p.itens.map((i) => linhaItem(p, i)).join('')}</tbody>
     </table></div>
-    ${p.status === 'EM_SEPARACAO' && pode('expedicao') ? '<p class="dica">Pesáveis: digite o <strong>peso bruto</strong> da balança (várias pesadas: 12,5+10,9) e o nº de <strong>caixas</strong>; a tara é descontada sozinha. Demais itens: deixe vazio se atendeu tudo, digite a quantidade se foi parcial, ou toque em <strong>Falta</strong>.</p>' : ''}
+    ${p.status === 'EM_SEPARACAO' && pode('expedicao') ? '<p class="dica">Separou um produto? Toque em <strong>OK</strong> na linha dele. Pode sair e voltar ao pedido: os itens com OK ficam marcados. Pesáveis: informe <strong>caixas</strong> e <strong>peso bruto</strong> (várias pesadas: 12,5+10,9) antes do OK. Demais itens: OK direto se saiu tudo, ou digite a quantidade se foi parcial. <strong>Falta</strong> já conta como resolvido.</p>' : ''}
     <div class="barra-acoes">${acoes(p)}</div>
     <details class="historico"><summary>Histórico (${p.historico.length})</summary>
       <ol>${p.historico.map((h) => `<li><time>${dataHora(h.criado_em)}</time> ${esc(h.descricao || h.status_novo)} <small>— ${esc(h.usuario_nome || '')}</small></li>`).join('')}</ol>
@@ -172,7 +203,9 @@ export async function montarDetalhe(el, id, { aoMudar = () => {}, fechar = () =>
     alvo.classList.toggle('txt-perigo', liquido != null && !(liquido > 0));
   });
 
-  const salvarItem = async (itemId, corpo, campo) => {
+  let salvando = Promise.resolve();
+  const salvarItem = (itemId, corpo, campo) => (salvando = salvarItemAgora(itemId, corpo, campo));
+  const salvarItemAgora = async (itemId, corpo, campo) => {
     const ordem = [...el.querySelectorAll('[data-bruto], [data-peso]')];
     const pos = ordem.indexOf(campo);
     try {
@@ -204,6 +237,23 @@ export async function montarDetalhe(el, id, { aoMudar = () => {}, fechar = () =>
   });
 
   el.addEventListener('click', async (e) => {
+    const okBtn = e.target.closest('[data-ok], [data-desfazer]');
+    if (okBtn) {
+      await salvando; // espera o peso/quantidade digitados serem gravados antes do OK
+      const separado = 'ok' in okBtn.dataset;
+      const itemId = okBtn.dataset.ok || okBtn.dataset.desfazer;
+      okBtn.disabled = true;
+      try {
+        await tentar(async () => feito(await api('PUT', `/api/pedidos/${id}/itens/${itemId}/separado`, { separado })));
+        if (separado) {
+          // Leva ao próximo item ainda sem OK.
+          const proxima = el.querySelector('tr[data-linha-item]:not(.item-ok)');
+          proxima?.querySelector('[data-bruto], [data-peso], [data-ok]')?.focus();
+          proxima?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        }
+      } catch { okBtn.disabled = false; }
+      return;
+    }
     const falta = e.target.closest('[data-falta]');
     if (falta) {
       const item = pedido.itens.find((i) => i.id === Number(falta.dataset.falta));

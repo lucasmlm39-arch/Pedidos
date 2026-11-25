@@ -37,6 +37,8 @@ export async function telaExpedicao(alvo) {
         <div class="lp-topo"><strong>#${p.id}</strong><span>${dataHora(p.lancado_em || p.criado_em)}</span></div>
         <div class="exp-cliente">${esc(p.cliente_fantasia || p.cliente_nome)}</div>
         <small>${p.qtd_itens} ${p.qtd_itens === 1 ? 'item' : 'itens'} · ${esc(p.vendedor_nome)} · ${moeda(p.total_centavos)}</small>
+        ${p.status === 'EM_SEPARACAO' ? `<div class="mini-progresso"><span style="width:${p.qtd_itens ? Math.round((p.itens_separados / p.qtd_itens) * 100) : 0}%"></span></div>
+          <small class="${p.itens_separados === p.qtd_itens ? 'txt-ok' : 'txt-info'}">${p.itens_separados} de ${p.qtd_itens} itens com OK</small>` : ''}
         ${p.status === 'AGUARDANDO_FATURAMENTO' && !p.impresso_em ? '<small class="txt-alerta">Não impresso</small>' : ''}
       </button></li>`).join('') : `<li>${vazio(aba === 'AGUARDANDO_EXPEDICAO' ? 'Nenhum pedido novo' : 'Nada aqui')}</li>`;
   }

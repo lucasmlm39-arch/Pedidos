@@ -131,6 +131,8 @@ const MIGRACOES = [
   ['pedido_itens', 'peso_bruto', 'REAL'],          // peso lido na balança
   ['pedido_itens', 'caixas', 'INTEGER'],           // nº de caixas pesadas junto
   ['pedido_itens', 'tara_kg', 'REAL'],             // tara por caixa usada no cálculo
+  ['pedido_itens', 'separado_em', 'TEXT'],         // expedição deu OK no item
+  ['pedido_itens', 'separado_por', 'INTEGER'],
 ];
 
 function migrar(db) {

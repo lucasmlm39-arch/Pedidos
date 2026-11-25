@@ -36,6 +36,12 @@ Pedido impresso ──► Faturamento: exporta arquivo ──► importa no Visu
 - O sistema desconta **caixas × tara** (padrão 2 kg por caixa, ajustável por produto) e cobra o **peso líquido**. Ex.: bruto 23,4 kg − 2 cx × 2 kg = 19,4 kg × R$ 4,50.
 - O comprovante impresso e o arquivo do Visual Software trazem pedido, bruto, caixas, tara e líquido.
 
+### Separação item por item (OK)
+
+- Cada item do pedido tem um botão **OK**. A expedição pode separar um produto, dar OK, sair do pedido e voltar depois: os itens com OK ficam marcados (verde) e travados, com **Desfazer** para corrigir.
+- Pesável só aceita OK depois de pesado. Item comum: OK direto = atendido inteiro; ou digite a quantidade parcial antes. **Falta** já conta como resolvido.
+- A lista mostra o progresso ("3 de 4 itens com OK") e **Concluir** só passa quando todos os itens têm OK.
+
 ## Vendedor sem internet (offline)
 
 - Ao entrar com internet, o aparelho baixa **clientes, produtos e tabelas de preço** (e atualiza a cada 30 min).

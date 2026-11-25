@@ -373,3 +373,24 @@ main.expedicao-tablet {
 }
 .lp-qtd .input::placeholder { color: var(--borda); font-weight: 400; }
 .lp-preco .input::placeholder { color: var(--texto-suave); }
+
+/* ---------- OK por item na separação ---------- */
+.txt-ok { color: var(--ok); display: block; }
+.separar { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: flex-end; gap: 8px 10px; }
+.btn-ok-item { min-width: 72px; font-weight: 700; letter-spacing: .02em; }
+.expedicao-tablet .btn-ok-item { min-height: 48px; min-width: 88px; font-size: 1.1rem; }
+tr.item-ok { background: var(--ok-fundo); }
+tr.item-ok td { color: var(--texto); }
+.conferido { display: inline-flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px 12px; }
+.conferido-valor { text-align: right; }
+.conferido-valor span { display: block; }
+.selo-ok-grande { font-size: .9rem; padding: 4px 10px; }
+.progresso-separacao { margin: 10px 0 4px; }
+.ps-texto { font-size: .9rem; color: var(--texto-suave); margin-bottom: 4px; }
+.ps-texto strong { color: var(--texto); }
+.ps-barra, .mini-progresso { height: 8px; border-radius: 999px; background: var(--borda); overflow: hidden; }
+.ps-barra span, .mini-progresso span { display: block; height: 100%; background: var(--ok); border-radius: inherit; transition: width .25s ease; }
+.mini-progresso { height: 5px; margin: 6px 0 2px; }
+.btn[aria-disabled="true"] { opacity: .6; }
+@media (prefers-reduced-motion: reduce) { .ps-barra span, .mini-progresso span { transition: none; } }
+@media (max-width: 600px) { .separar, .conferido { justify-content: flex-start; } }

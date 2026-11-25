@@ -22,6 +22,15 @@ async function api(quem, metodo, rota, corpo) {
 const idCliente = (codigo) => db.prepare('SELECT id FROM clientes WHERE codigo = ?').get(codigo).id;
 const idProduto = (codigo) => db.prepare('SELECT id FROM produtos WHERE codigo = ?').get(codigo).id;
 
+// Dá OK em todos os itens ainda não conferidos (expedição).
+async function okTodos(pedidoId) {
+  const p = (await api('exp', 'GET', `/api/pedidos/${pedidoId}`)).dados;
+  for (const i of p.itens.filter((x) => !x.separado_em)) {
+    const r = await api('exp', 'PUT', `/api/pedidos/${pedidoId}/itens/${i.id}/separado`, { separado: true });
+    assert.equal(r.status, 200, r.dados.erro);
+  }
+}
+
 before(async () => {
   db = abrirBanco(':memory:');
   popularDemonstracao(db);
@@ -119,6 +128,13 @@ test('fluxo completo com preço abaixo da tabela, aprovação, pesagem e faturam
   const pesado = await api('exp', 'PUT', `/api/pedidos/${pedido.id}/itens/${itemBatata.id}/peso`, { peso: 31.25 });
   assert.equal(pesado.status, 200);
   assert.equal(pesado.dados.total_centavos, 4 * 9000 + Math.round(31.25 * 390));
+  // Sem OK nos itens não conclui.
+  const semOk = await api('exp', 'POST', `/api/pedidos/${pedido.id}/concluir`);
+  assert.equal(semOk.status, 400);
+  assert.match(semOk.dados.erro, /Falta dar OK/);
+  await okTodos(pedido.id);
+  // Item com OK fica travado até desfazer.
+  assert.equal((await api('exp', 'PUT', `/api/pedidos/${pedido.id}/itens/${itemBatata.id}/peso`, { peso: 30 })).status, 409);
   const concl = await api('exp', 'POST', `/api/pedidos/${pedido.id}/concluir`);
   assert.equal(concl.dados.status, 'AGUARDANDO_FATURAMENTO');
 

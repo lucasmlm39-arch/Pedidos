@@ -20,6 +20,15 @@ async function api(quem, metodo, rota, corpo, cru = false) {
 const idCliente = (c) => db.prepare('SELECT id FROM clientes WHERE codigo = ?').get(c).id;
 const idProduto = (c) => db.prepare('SELECT id FROM produtos WHERE codigo = ?').get(c).id;
 
+// Dá OK em todos os itens ainda não conferidos (expedição).
+async function okTodos(pedidoId) {
+  const p = (await api('exp', 'GET', `/api/pedidos/${pedidoId}`)).dados;
+  for (const i of p.itens.filter((x) => !x.separado_em)) {
+    const r = await api('exp', 'PUT', `/api/pedidos/${pedidoId}/itens/${i.id}/separado`, { separado: true });
+    assert.equal(r.status, 200, r.dados.erro);
+  }
+}
+
 before(async () => {
   db = abrirBanco(':memory:');
   popularDemonstracao(db);
@@ -80,6 +89,7 @@ test('item em falta, exportação CSV para o Visual Software e marcação de exp
   const [tomate, laranja, ovos] = p.itens;
   await api('exp', 'PUT', `/api/pedidos/${p.id}/itens/${laranja.id}/peso`, { peso: 21.4 });
   await api('exp', 'PUT', `/api/pedidos/${p.id}/itens/${ovos.id}/peso`, { peso: 0 }); // em falta
+  await okTodos(p.id);
   const fim = (await api('exp', 'POST', `/api/pedidos/${p.id}/concluir`)).dados;
   assert.equal(fim.total_centavos, 3 * tomate.preco_centavos + Math.round(21.4 * laranja.preco_centavos));
 
@@ -153,8 +163,48 @@ test('abacaxi pedido em unidades, cobrado por kg, com desconto da caixa (tara)',
   assert.equal(direto.peso_real, 19);
   assert.equal(direto.peso_bruto, null);
   await api('exp', 'PUT', `/api/pedidos/${p.id}/itens/${item.id}/peso`, { peso_bruto: 23.4, caixas: 2 });
+  await okTodos(p.id);
   await api('exp', 'POST', `/api/pedidos/${p.id}/concluir`);
   const csv = await (await api('fat', 'POST', '/api/exportacao', { ids: [p.id], codificacao: 'utf8' }, true)).text();
   const linha = csv.split('\r\n').find((l) => l.startsWith(`${p.id};`));
   assert.ok(linha.includes(';10,000;UN;23,400;2;4,000;19,400;4,50;87,30;'), linha);
+});
+
+test('OK por item: separar um produto por vez, sair e voltar', async () => {
+  const p = (await api('carlos', 'POST', '/api/pedidos', {
+    cliente_id: idCliente('C003'),
+    itens: [{ produto_id: idProduto('P002'), quantidade: 30 }, { produto_id: idProduto('P005'), quantidade: 10 }, { produto_id: idProduto('P008'), quantidade: 4 }],
+  })).dados;
+  const [alface, cebola, ovos] = p.itens;
+  const ok = (item, separado = true) => api('exp', 'PUT', `/api/pedidos/${p.id}/itens/${item.id}/separado`, { separado });
+  // Antes de aceitar não dá OK.
+  assert.equal((await ok(alface)).status, 409);
+  await api('exp', 'POST', `/api/pedidos/${p.id}/aceitar`);
+  // Vendedor não dá OK.
+  assert.equal((await api('carlos', 'PUT', `/api/pedidos/${p.id}/itens/${alface.id}/separado`, { separado: true })).status, 403);
+  // Item comum: OK sem digitar = atendido inteiro.
+  assert.ok((await ok(alface)).dados.itens[0].separado_em);
+  // Pesável sem peso não aceita OK.
+  const semPeso = await ok(cebola);
+  assert.equal(semPeso.status, 400);
+  assert.match(semPeso.dados.erro, /Pese/);
+  // "Sai" do pedido: a lista mostra o progresso.
+  let lista = (await api('exp', 'GET', '/api/pedidos?status=EM_SEPARACAO')).dados;
+  assert.equal(lista.find((x) => x.id === p.id).itens_separados, 1);
+  // Volta: pesa a cebola e dá OK; ovos em falta contam como resolvidos.
+  await api('exp', 'PUT', `/api/pedidos/${p.id}/itens/${cebola.id}/peso`, { peso_bruto: 12, caixas: 1 });
+  await ok(cebola);
+  const falta = (await api('exp', 'PUT', `/api/pedidos/${p.id}/itens/${ovos.id}/peso`, { peso: 0 })).dados;
+  assert.ok(falta.itens[2].separado_em);
+  // Desfazer a falta volta a ficar pendente.
+  const semFalta = (await api('exp', 'PUT', `/api/pedidos/${p.id}/itens/${ovos.id}/peso`, { peso: null })).dados;
+  assert.equal(semFalta.itens[2].separado_em, null);
+  await api('exp', 'PUT', `/api/pedidos/${p.id}/itens/${ovos.id}/peso`, { peso: 0 });
+  // Desfazer OK libera para alterar o peso.
+  await ok(cebola, false);
+  assert.equal((await api('exp', 'PUT', `/api/pedidos/${p.id}/itens/${cebola.id}/peso`, { peso: 9.5 })).status, 200);
+  await ok(cebola);
+  lista = (await api('exp', 'GET', '/api/pedidos?status=EM_SEPARACAO')).dados;
+  assert.equal(lista.find((x) => x.id === p.id).itens_separados, 3);
+  assert.equal((await api('exp', 'POST', `/api/pedidos/${p.id}/concluir`)).dados.status, 'AGUARDANDO_FATURAMENTO');
 });

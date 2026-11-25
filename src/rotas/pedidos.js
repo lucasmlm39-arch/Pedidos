@@ -43,6 +43,10 @@ function rotasPedidos(db, ev) {
     res.json(P.registrarPeso(db, ev, req.usuario, id(req), Number(req.params.itemId), req.body));
   });
 
+  r.put('/:id/itens/:itemId/separado', exigirPapel('expedicao'), (req, res) => {
+    res.json(P.marcarSeparado(db, ev, req.usuario, id(req), Number(req.params.itemId), req.body.separado !== false));
+  });
+
   r.post('/:id/concluir', exigirPapel('expedicao'), (req, res) => {
     res.json(P.concluirSeparacao(db, ev, req.usuario, id(req)));
   });

@@ -242,7 +242,8 @@ function recusarExpedicao(db, ev, usuario, id, motivo) {
   transacao(db, () => {
     const p = buscarPedidoBruto(db, id);
     exigirStatus(p, STATUS.AGUARDANDO_EXPEDICAO, STATUS.EM_SEPARACAO);
-    db.prepare('UPDATE pedido_itens SET peso_real = NULL, peso_bruto = NULL, caixas = NULL, tara_kg = NULL WHERE pedido_id = ?').run(p.id);
+    db.prepare(`UPDATE pedido_itens SET peso_real = NULL, peso_bruto = NULL, caixas = NULL, tara_kg = NULL,
+                separado_em = NULL, separado_por = NULL WHERE pedido_id = ?`).run(p.id);
     mudarStatus(db, p, usuario, STATUS.REVISAO, `Recusado pela expedição: ${motivo}`, { motivo_status: String(motivo) });
   });
   const pedido = obterPedido(db, id);
@@ -261,9 +262,11 @@ function registrarPeso(db, ev, usuario, id, itemId, dados) {
   transacao(db, () => {
     const p = buscarPedidoBruto(db, id);
     exigirStatus(p, STATUS.EM_SEPARACAO);
-    const item = db.prepare(`SELECT i.id, pr.pesavel, pr.unidade, pr.tara_kg FROM pedido_itens i JOIN produtos pr ON pr.id = i.produto_id
+    const item = db.prepare(`SELECT i.id, i.separado_em, i.peso_real, pr.pesavel, pr.unidade, pr.tara_kg
+                             FROM pedido_itens i JOIN produtos pr ON pr.id = i.produto_id
                              WHERE i.id = ? AND i.pedido_id = ?`).get(Number(itemId), p.id);
     if (!item) throw new ErroNegocio('Item não encontrado', 404);
+    if (item.separado_em && item.peso_real !== 0) throw new ErroNegocio('Item já conferido (OK). Toque em "Desfazer" para alterar.', 409);
     let liquido = null;
     let bruto = null;
     let caixas = null;
@@ -285,10 +288,30 @@ function registrarPeso(db, ev, usuario, id, itemId, dados) {
       if (!aceitaFracao(item) && !Number.isInteger(liquido)) throw new ErroNegocio(`Quantidade em ${item.unidade} deve ser inteira`);
       liquido = arred3(liquido);
     }
-    db.prepare('UPDATE pedido_itens SET peso_real = ?, peso_bruto = ?, caixas = ?, tara_kg = ? WHERE id = ?')
-      .run(liquido, bruto, caixas, tara, item.id);
+    // "Falta" (0) já conta como item resolvido; tirar a falta volta a ficar pendente.
+    const separado = liquido === 0 ? agora() : null;
+    db.prepare('UPDATE pedido_itens SET peso_real = ?, peso_bruto = ?, caixas = ?, tara_kg = ?, separado_em = ?, separado_por = ? WHERE id = ?')
+      .run(liquido, bruto, caixas, tara, separado, separado ? usuario.id : null, item.id);
     const itens = db.prepare('SELECT quantidade, peso_real, preco_centavos, unidade_pedido, peso_estimado_kg FROM pedido_itens WHERE pedido_id = ?').all(p.id);
     db.prepare('UPDATE pedidos SET total_centavos = ?, atualizado_em = ? WHERE id = ?').run(calcularTotal(itens), agora(), p.id);
+  });
+  const pedido = obterPedido(db, id);
+  ev?.emitir('pedido', { id: pedido.id, status: pedido.status, rotulo: ROTULOS[pedido.status] }, { papeis: ['expedicao'] });
+  return pedido;
+}
+
+// Expedição dá OK (ou desfaz) num item: permite separar um produto por vez, sair e voltar ao pedido.
+function marcarSeparado(db, ev, usuario, id, itemId, separado) {
+  transacao(db, () => {
+    const p = buscarPedidoBruto(db, id);
+    exigirStatus(p, STATUS.EM_SEPARACAO);
+    const item = db.prepare(`SELECT i.id, i.peso_real, pr.pesavel, pr.descricao FROM pedido_itens i JOIN produtos pr ON pr.id = i.produto_id
+                             WHERE i.id = ? AND i.pedido_id = ?`).get(Number(itemId), p.id);
+    if (!item) throw new ErroNegocio('Item não encontrado', 404);
+    if (separado && item.pesavel && item.peso_real == null) throw new ErroNegocio(`Pese "${item.descricao}" antes de dar OK`);
+    db.prepare('UPDATE pedido_itens SET separado_em = ?, separado_por = ? WHERE id = ?')
+      .run(separado ? agora() : null, separado ? usuario.id : null, item.id);
+    db.prepare('UPDATE pedidos SET atualizado_em = ? WHERE id = ?').run(agora(), p.id);
   });
   const pedido = obterPedido(db, id);
   ev?.emitir('pedido', { id: pedido.id, status: pedido.status, rotulo: ROTULOS[pedido.status] }, { papeis: ['expedicao'] });
@@ -302,6 +325,9 @@ function concluirSeparacao(db, ev, usuario, id) {
     const faltando = db.prepare(`SELECT pr.descricao FROM pedido_itens i JOIN produtos pr ON pr.id = i.produto_id
                                  WHERE i.pedido_id = ? AND pr.pesavel = 1 AND i.peso_real IS NULL`).all(p.id);
     if (faltando.length) throw new ErroNegocio(`Falta pesar: ${faltando.map((f) => f.descricao).join(', ')}`);
+    const semOk = db.prepare(`SELECT pr.descricao FROM pedido_itens i JOIN produtos pr ON pr.id = i.produto_id
+                              WHERE i.pedido_id = ? AND i.separado_em IS NULL`).all(p.id);
+    if (semOk.length) throw new ErroNegocio(`Falta dar OK em: ${semOk.map((f) => f.descricao).join(', ')}`);
     mudarStatus(db, p, usuario, STATUS.AGUARDANDO_FATURAMENTO, 'Separação/pesagem concluída. Enviado ao faturamento');
   });
   const pedido = obterPedido(db, id);
@@ -388,7 +414,8 @@ function listarPedidos(db, usuario, filtros = {}) {
     SELECT p.id, p.uuid, p.status, p.total_centavos, p.criado_em, p.lancado_em, p.atualizado_em, p.impresso_em, p.exportado_em, p.motivo_status,
            c.razao_social AS cliente_nome, c.nome_fantasia AS cliente_fantasia, u.nome AS vendedor_nome,
            (SELECT COUNT(*) FROM pedido_itens i WHERE i.pedido_id = p.id) AS qtd_itens,
-           (SELECT COUNT(*) FROM pedido_itens i WHERE i.pedido_id = p.id AND i.aprovacao = 'pendente') AS itens_pendentes
+           (SELECT COUNT(*) FROM pedido_itens i WHERE i.pedido_id = p.id AND i.aprovacao = 'pendente') AS itens_pendentes,
+           (SELECT COUNT(*) FROM pedido_itens i WHERE i.pedido_id = p.id AND i.separado_em IS NOT NULL) AS itens_separados
     FROM pedidos p JOIN clientes c ON c.id = p.cliente_id JOIN usuarios u ON u.id = p.vendedor_id
     ${where} ORDER BY p.id DESC LIMIT 200`).all(params)
     .map((p) => ({ ...p, rotulo_status: ROTULOS[p.status] }));
@@ -397,6 +424,6 @@ function listarPedidos(db, usuario, filtros = {}) {
 module.exports = {
   STATUS, ROTULOS, ErroNegocio, aceitaFracao, quantidadeFinal,
   criarPedido, revisarPedido, decidirPrecos, aceitarExpedicao, recusarExpedicao,
-  registrarPeso, concluirSeparacao, marcarImpresso, faturar, cancelar,
+  registrarPeso, marcarSeparado, concluirSeparacao, marcarImpresso, faturar, cancelar,
   obterPedido, listarPedidos,
 };
